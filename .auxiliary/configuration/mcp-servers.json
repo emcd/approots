@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "agentmux": {
+      "command": "agentmux",
+      "args": [
+        "host", "mcp"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": [ "-y", "@upstash/context7-mcp" ]
+    },
+    "nb": {
+      "command": "nb-mcp",
+      "args": [
+        "--notebook", "approots",
+        "--no-commit-signing"
+      ]
+    }
+  }
+}

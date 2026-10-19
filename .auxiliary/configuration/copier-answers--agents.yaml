@@ -1,0 +1,12 @@
+# Changes here will be overwritten by Copier
+_commit: v1.0a15-14-g9dd6e7d
+_src_path: gh:emcd/agents-common
+coders:
+- claude
+- codex
+- opencode
+instructions_target: .auxiliary/agents/standards
+languages:
+- rust
+project_name: approots
+support_local_models: true
