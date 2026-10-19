@@ -1,0 +1,75 @@
+name: qa
+
+on:
+  pull_request:
+    branches: ['*']
+  push:
+    branches: ['master', 'release-*']
+  workflow_dispatch: {}
+
+jobs:
+
+  initialize:
+    uses: ./.github/workflows/core--initializer.yaml
+
+  lint:
+    needs: [initialize]
+    strategy:
+      fail-fast: true
+      matrix:
+        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
+    runs-on: ${{ matrix.cell.runner }}
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Target
+        run: rustup target add ${{ matrix.cell.target }}
+
+      - name: Install pre-commit
+        run: pipx install pre-commit==4.6.2
+
+      - name: Install linecheck
+        run: cargo install linecheck --version 1.2.1 --locked
+
+      - name: Install nextest
+        run: cargo install cargo-nextest --version 0.9.146 --locked
+
+      - name: Generate Lockfile If Missing
+        # Fresh copies have no Cargo.lock (the template cannot pre-resolve
+        # dependencies). Bootstrap it once; later runs enforce it via --locked.
+        # Explicit bash: Windows runners default to pwsh, which has no `test`.
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Run pre-commit Stage
+        run: pre-commit run --hook-stage pre-commit --all-files --show-diff-on-failure
+
+  build:
+    needs: [initialize]
+    strategy:
+      fail-fast: true
+      matrix:
+        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
+    runs-on: ${{ matrix.cell.runner }}
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Target
+        run: rustup target add ${{ matrix.cell.target }}
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Build
+        run: cargo build --locked --all-targets

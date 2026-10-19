@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: [ 'v[1-9]+.*' ]
+  workflow_dispatch: {}
+
+jobs:
+
+  initialize:
+    uses: ./.github/workflows/core--initializer.yaml
+
+  release-gates:
+    needs: [initialize]
+    strategy:
+      fail-fast: true
+      matrix:
+        cell: ${{ fromJSON(needs.initialize.outputs.cells) }}
+    runs-on: ${{ matrix.cell.runner }}
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Target
+        run: rustup target add ${{ matrix.cell.target }}
+
+      - name: Install nextest
+        run: cargo install cargo-nextest --version 0.9.146 --locked
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Build Release
+        run: cargo build --release --locked --all-targets
+
+      - name: Test Release
+        run: cargo nextest run --release --locked
+
+      - name: Package
+        run: cargo package --locked --no-verify
+
+  # Operator prerequisite: register a crates.io trusted publisher for this
+  # crate before the first release. The template promises no tokenless first
+  # publication and stores no long-lived token.
+  publish:
+    needs: [initialize, release-gates]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+
+      - name: Check Out
+        uses: actions/checkout@v4
+
+      - name: Set Up Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Lockfile If Missing
+        run: test -f Cargo.lock || cargo generate-lockfile
+        shell: bash
+
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+

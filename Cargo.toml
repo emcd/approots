@@ -1,0 +1,13 @@
+[package]
+name = "approots"
+version = "0.1.0"
+description = "Directory locations for application caches, configuration, and state."
+authors = []
+license = "Apache-2.0"
+edition = "2024"
+rust-version = "1.98"
+
+[lib]
+name = "approots"
+path = "src/lib.rs"
+

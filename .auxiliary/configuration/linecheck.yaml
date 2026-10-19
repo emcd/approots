@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tupe12334/linecheck/main/schema/linecheck.schema.json
+
+# Project-owned after the first copy. Threshold and exclusion edits survive
+# `copier update` through `_skip_if_exists` on this file.
+
+exclude:
+  - "**/*.md"
+  - "**/*.toml"
+  - "**/*.yaml"
+  - "**/*.yml"
+  - "**/*.json"
+  - "target/**"
+  - ".git/**"
+
+rules:
+  - pattern: "src/**/*.rs"
+    warn: 800
+    warn_message: "Approaching the line-count limit; please consider separating concerns."
+    error: 1000
+    error_message: "Exceeds the line-count limit; please separate concerns."
+  - pattern: "tests/**/*.rs"
+    warn: 800
+    warn_message: "Approaching the line-count limit; please consider separating concerns."
+    error: 1000
+    error_message: "Exceeds the line-count limit; please separate concerns."
