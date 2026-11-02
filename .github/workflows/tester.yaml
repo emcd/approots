@@ -47,7 +47,7 @@ jobs:
         shell: bash
 
       - name: Run pre-commit Stage
-        run: pre-commit run --hook-stage pre-commit --all-files --show-diff-on-failure
+        run: pre-commit run --hook-stage pre-commit --config .auxiliary/configuration/pre-commit.yaml --all-files --show-diff-on-failure
 
   build:
     needs: [initialize]

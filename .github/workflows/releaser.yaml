@@ -39,11 +39,10 @@ jobs:
         run: cargo build --release --locked --all-targets
 
       - name: Test Release
-        run: cargo nextest run --release --locked
+        run: cargo nextest run --release --locked --no-tests=warn
 
       - name: Package
         run: cargo package --locked --no-verify
-
   # Operator prerequisite: register a crates.io trusted publisher for this
   # crate before the first release. The template promises no tokenless first
   # publication and stores no long-lived token.
@@ -73,4 +72,3 @@ jobs:
         run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
