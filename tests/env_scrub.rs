@@ -14,21 +14,25 @@ fn hostile_git_directory_does_not_divert_discovery() {
         vec!["init", "-q", "-b", "master"],
         vec!["config", "user.email", "test@example.invalid"],
         vec!["config", "user.name", "Test"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "init"],
     ] {
-        let output = Command::new("git")
+        // Fixture-init git calls get the same prefix blast as the
+        // library: hooks and CI export GIT_* routing variables.
+        let mut command = Command::new("git");
+        command
             .args(&args)
             .current_dir(&repo)
-            .output()
-            .expect("git setup");
-        assert!(output.status.success(), "git {args:?} failed");
-    }
-    fs::write(repo.join("f.txt"), "x").expect("seed file");
-    for args in [vec!["add", "."], vec!["commit", "-qm", "init"]] {
-        let output = Command::new("git")
-            .args(&args)
-            .current_dir(&repo)
-            .output()
-            .expect("git setup");
+            .env("GIT_CONFIG_NOSYSTEM", "1");
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(&key);
+            }
+        }
+        if args[0] == "add" {
+            fs::write(repo.join("f.txt"), "x").expect("seed file");
+        }
+        let output = command.output().expect("git setup");
         assert!(output.status.success(), "git {args:?} failed");
     }
 
@@ -37,12 +41,16 @@ fn hostile_git_directory_does_not_divert_discovery() {
     unsafe {
         std::env::set_var("GIT_DIR", "/nonexistent/hostile");
         std::env::set_var("GIT_WORK_TREE", "/nonexistent");
+        std::env::set_var("GIT_INDEX_FILE", "/nonexistent/index");
+        std::env::set_var("GIT_COMMON_DIR", "/nonexistent/common");
     }
     let checkout = discover_checkout(&repo);
     // SAFETY: same single-test process as above.
     unsafe {
         std::env::remove_var("GIT_DIR");
         std::env::remove_var("GIT_WORK_TREE");
+        std::env::remove_var("GIT_INDEX_FILE");
+        std::env::remove_var("GIT_COMMON_DIR");
     }
     let checkout = checkout.expect("discovery survives contamination");
     assert_eq!(checkout.worktree_root, PathBuf::from(&repo));

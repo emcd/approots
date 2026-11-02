@@ -25,16 +25,19 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    // Commit hooks export GIT_INDEX_FILE and friends; fixtures must
-    // not inherit them.
-    let output = Command::new("git")
+    // Blast-by-prefix: commit hooks export GIT_INDEX_FILE and friends;
+    // fixtures must not inherit any GIT_* routing variable.
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .expect("run git");
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(&key);
+        }
+    }
+    let output = command.output().expect("run git");
     assert!(
         output.status.success(),
         "git {args:?} failed: {}",
