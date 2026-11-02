@@ -388,3 +388,83 @@ fn sanitize_is_shared_and_lossy_by_design() {
     assert_eq!(sanitize_name("my app.v2"), "my-app-v2");
     assert_eq!(sanitize_name("a.b"), sanitize_name("a-b"));
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_alias_discovers_real_checkout() {
+    let repo = git_repo("alias-repo");
+    let alias = temp_dir("alias-parent").join("alias");
+    std::os::unix::fs::symlink(&repo, &alias).expect("alias link");
+    let checkout = discover_checkout(&alias).expect("discover alias");
+    assert_eq!(checkout.worktree_root, repo);
+    assert_eq!(checkout.git_common_dir, repo.join(".git"));
+    assert_eq!(checkout.common_worktree_root, repo);
+}
+
+#[test]
+fn trailing_space_checkout_name_is_preserved() {
+    let parent = temp_dir("space-parent");
+    let repo = parent.join("repo ");
+    fs::create_dir_all(&repo).expect("spaced repo");
+    git(&repo, &["init", "-q", "-b", "master"]);
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("f.txt"), "x").expect("seed");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+    let checkout = discover_checkout(&repo).expect("discover spaced");
+    assert_eq!(checkout.worktree_root, repo);
+}
+
+#[test]
+fn xdg_provenance_comes_from_one_snapshot() {
+    // Child mode: run the assertions under the spawned environment.
+    if std::env::var_os("APPROOTS_XDG_CHILD").is_some() {
+        let resolved =
+            approots::platform_root("fixture-app", DirectoryKind::Cache)
+                .expect("child platform root");
+        let expected_base = PathBuf::from(
+            std::env::var("APPROOTS_EXPECT_BASE").expect("expected base"),
+        );
+        assert_eq!(resolved.path, expected_base.join("fixture-app"));
+        let expected_provenance = match std::env::var("APPROOTS_EXPECT_PROV")
+            .expect("expected provenance")
+            .as_str()
+        {
+            "env" => Provenance::PlatformEnvironment,
+            _ => Provenance::PlatformDefault,
+        };
+        assert_eq!(resolved.provenance, expected_provenance);
+        return;
+    }
+    let home = temp_dir("xdg-home");
+    let override_dir = temp_dir("xdg-override");
+    let exe = std::env::current_exe().expect("test exe");
+    for (xdg_value, expected_base, expected_provenance) in [
+        (
+            override_dir.to_string_lossy().into_owned(),
+            override_dir.clone(),
+            "env",
+        ),
+        ("relative/cache".to_string(), home.join(".cache"), "default"),
+    ] {
+        let output = Command::new(&exe)
+            .args([
+                "xdg_provenance_comes_from_one_snapshot",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("APPROOTS_XDG_CHILD", "1")
+            .env("APPROOTS_EXPECT_BASE", &expected_base)
+            .env("APPROOTS_EXPECT_PROV", expected_provenance)
+            .env("XDG_CACHE_HOME", xdg_value)
+            .env("HOME", &home)
+            .output()
+            .expect("spawn xdg child");
+        assert!(
+            output.status.success(),
+            "xdg child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

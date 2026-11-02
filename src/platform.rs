@@ -1,5 +1,7 @@
 //! Platform-standard roots through the `directories` primitive.
 
+use std::path::PathBuf;
+
 use directories::BaseDirs;
 
 use crate::types::{
@@ -23,13 +25,78 @@ pub fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
+/// Environment inputs captured exactly once for one resolution.
+///
+/// Both the chosen base and its provenance derive from this snapshot;
+/// nothing rereads the live environment afterwards, and the process
+/// environment is never mutated around a provider call.
+#[derive(Clone, Debug)]
+struct PlatformSnapshot {
+    /// Raw XDG values per kind (Linux override inputs).
+    xdg: [Option<String>; 4],
+    /// Captured home directory, when any.
+    home: Option<PathBuf>,
+}
+
+impl PlatformSnapshot {
+    fn capture(base_dirs: Option<&BaseDirs>) -> Self {
+        let read = |name: &str| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+        Self {
+            xdg: [
+                read("XDG_CONFIG_HOME"),
+                read("XDG_STATE_HOME"),
+                read("XDG_CACHE_HOME"),
+                read("XDG_DATA_HOME"),
+            ],
+            home: base_dirs.map(|dirs| dirs.home_dir().to_path_buf()),
+        }
+    }
+
+    /// Derives the base and provenance for one kind from the snapshot.
+    ///
+    /// On Linux a valid absolute XDG value is the override; the
+    /// default derives from the captured home, never from a provider
+    /// value that may already embed a different XDG read. Elsewhere
+    /// the provider default stands (its environment reads are inputs
+    /// to the default, not overrides).
+    fn base(
+        &self,
+        kind: DirectoryKind,
+        provider_default: Option<PathBuf>,
+    ) -> (Option<PathBuf>, Provenance) {
+        if cfg!(target_os = "linux") {
+            let index = match kind {
+                DirectoryKind::Configuration => 0,
+                DirectoryKind::State => 1,
+                DirectoryKind::Cache => 2,
+                DirectoryKind::Data => 3,
+            };
+            if let Some(raw) = &self.xdg[index] {
+                let candidate = PathBuf::from(raw);
+                if candidate.is_absolute() {
+                    return (Some(candidate), Provenance::PlatformEnvironment);
+                }
+            }
+            let default = self.home.as_ref().map(|home| match kind {
+                DirectoryKind::Configuration => home.join(".config"),
+                DirectoryKind::State => home.join(".local/state"),
+                DirectoryKind::Cache => home.join(".cache"),
+                DirectoryKind::Data => home.join(".local/share"),
+            });
+            return (default, Provenance::PlatformDefault);
+        }
+        (provider_default, Provenance::PlatformDefault)
+    }
+}
+
 /// Resolves one platform-standard root with honest provenance.
 ///
-/// Inputs are captured and validated once: on Linux a valid absolute
-/// XDG override supplies both the base and `PlatformEnvironment`
-/// provenance; relative or blank overrides are ignored by the
-/// platform convention and yield the default. The validated
-/// application name is appended literally to the platform base.
+/// The validated application name is appended literally to the
+/// captured platform base.
 ///
 /// # Errors
 ///
@@ -41,10 +108,17 @@ pub fn platform_root(
     kind: DirectoryKind,
 ) -> Result<ResolvedRoot, ResolutionError> {
     validate_token(application)?;
-    let Some(base_dirs) = BaseDirs::new() else {
-        return Err(ResolutionError::Unavailable(kind));
-    };
-    let (base, provenance) = platform_base(&base_dirs, kind)?;
+    let base_dirs = BaseDirs::new();
+    let snapshot = PlatformSnapshot::capture(base_dirs.as_ref());
+    let provider_default = base_dirs.as_ref().and_then(|dirs| match kind {
+        DirectoryKind::Configuration => Some(dirs.config_dir().to_path_buf()),
+        DirectoryKind::State => {
+            dirs.state_dir().map(|path| path.to_path_buf())
+        },
+        DirectoryKind::Cache => Some(dirs.cache_dir().to_path_buf()),
+        DirectoryKind::Data => Some(dirs.data_dir().to_path_buf()),
+    });
+    let (base, provenance) = snapshot.base(kind, provider_default);
     let Some(base) = base else {
         return Err(ResolutionError::Unavailable(kind));
     };
@@ -52,36 +126,4 @@ pub fn platform_root(
         path: base.join(application),
         provenance,
     })
-}
-
-/// Captures the platform base for one kind from validated inputs once.
-fn platform_base(
-    base_dirs: &BaseDirs,
-    kind: DirectoryKind,
-) -> Result<(Option<std::path::PathBuf>, Provenance), ResolutionError> {
-    if cfg!(target_os = "linux") {
-        let environment_variable = match kind {
-            DirectoryKind::Configuration => "XDG_CONFIG_HOME",
-            DirectoryKind::State => "XDG_STATE_HOME",
-            DirectoryKind::Cache => "XDG_CACHE_HOME",
-            DirectoryKind::Data => "XDG_DATA_HOME",
-        };
-        if let Some(value) = std::env::var_os(environment_variable) {
-            let candidate = std::path::PathBuf::from(&value);
-            if !value.is_empty() && candidate.is_absolute() {
-                return Ok((Some(candidate), Provenance::PlatformEnvironment));
-            }
-        }
-    }
-    let base = match kind {
-        DirectoryKind::Configuration => {
-            Some(base_dirs.config_dir().to_path_buf())
-        },
-        DirectoryKind::State => {
-            base_dirs.state_dir().map(|path| path.to_path_buf())
-        },
-        DirectoryKind::Cache => Some(base_dirs.cache_dir().to_path_buf()),
-        DirectoryKind::Data => Some(base_dirs.data_dir().to_path_buf()),
-    };
-    Ok((base, Provenance::PlatformDefault))
 }

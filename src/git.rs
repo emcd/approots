@@ -1,6 +1,7 @@
 //! Hardened Git checkout discovery and identity validation.
 
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -36,7 +37,11 @@ pub fn discover_checkout(
     } else {
         common_raw
     };
-    let git_common_dir = normalize_lexical(&common_joined);
+    // The common directory is Git-observed and must exist: canonicalize
+    // it as an observation (never as caller-path propagation) so owner
+    // comparisons reconcile without retargeting through symlinks.
+    let git_common_dir = fs::canonicalize(&common_joined)
+        .unwrap_or_else(|_| normalize_lexical(&common_joined));
     // A submodule common directory is the sequence
     // <super>/.git/modules/<name>, never a bare "modules" component.
     let components: Vec<_> = git_common_dir
@@ -120,17 +125,16 @@ fn main_worktree_root(
     git_common_dir: &Path,
 ) -> Result<PathBuf, ResolutionError> {
     let output = run_git(start, &["worktree", "list", "--porcelain", "-z"])?;
-    // -z records are NUL-separated with raw path bytes preserved.
-    let entries: Vec<PathBuf> = output
-        .split(|byte| *byte == 0)
-        .filter_map(|record| {
-            record
-                .split(|byte| *byte == b'\n')
-                .next()
-                .and_then(|line| line.strip_prefix(b"worktree ".as_slice()))
-                .map(path_from_bytes)
-        })
-        .collect();
+    // With -z every attribute line is NUL-terminated, so a pathname
+    // containing a newline stays inside one segment; never split on
+    // newlines here.
+    let mut entries = Vec::new();
+    for attribute in output.split(|byte| *byte == 0) {
+        if let Some(path) = attribute.strip_prefix(b"worktree ".as_slice()) {
+            entries.push(path_from_bytes(path)?);
+        }
+    }
+    let entries = entries;
     // Git's separate-Git-directory listing names the Git directory's
     // parent as a worktree; only trust the owner match when the real
     // worktree is itself listed.
@@ -157,30 +161,40 @@ fn main_worktree_root(
 fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
     let output = run_git_raw(start, &["rev-parse", flag])?;
     let mut bytes = output.as_slice();
+    // Git frames output with exactly one trailing LF; a preceding CR
+    // belongs to the pathname on POSIX and is preserved.
     if bytes.last() == Some(&b'\n') {
         bytes = &bytes[..bytes.len() - 1];
-        if bytes.last() == Some(&b'\r') {
-            bytes = &bytes[..bytes.len() - 1];
-        }
     }
     if bytes.is_empty() {
         return Err(ResolutionError::GitFailed(format!(
             "empty output for {flag}"
         )));
     }
-    Ok(path_from_bytes(bytes))
+    path_from_bytes(bytes)
 }
 
 /// Builds a path from raw Git output bytes without lossy conversion.
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+///
+/// # Errors
+///
+/// Returns [`ResolutionError::GitFailed`] for non-UTF8 bytes on
+/// platforms without byte-native paths.
+fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf, ResolutionError> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
-        PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
     }
     #[cfg(not(unix))]
     {
-        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+        String::from_utf8(bytes.to_vec())
+            .map(PathBuf::from)
+            .map_err(|_| {
+                ResolutionError::GitFailed(
+                    "non-UTF8 pathname from git".to_string(),
+                )
+            })
     }
 }
 
@@ -254,12 +268,19 @@ fn run_git_status(
     }
     // Set after the blast: env-then-remove would unset it again.
     command.env("GIT_CONFIG_NOSYSTEM", "1");
+    // Attribute spawn failures before spawning: a missing start
+    // directory also surfaces as ErrorKind::NotFound from the spawn
+    // itself, so it must not be read as a missing executable.
+    if let Err(error) = std::fs::metadata(start) {
+        return Err(ResolutionError::GitFailed(format!(
+            "start directory {}: {error}",
+            start.display()
+        )));
+    }
     let output = command.output().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             ResolutionError::GitUnavailable
         } else {
-            // Includes an inaccessible or nonexistent start directory:
-            // an execution failure, never silent absence.
             ResolutionError::GitFailed(format!("spawn git: {error}"))
         }
     })?;
