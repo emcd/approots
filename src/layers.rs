@@ -1,16 +1,13 @@
-//! Ordered, closed directory layer lists (first-match-wins per file).
+//! Ordered, closed directory layer candidates.
 
-use std::{
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+use std::{fs, io::ErrorKind, path::PathBuf};
 
-use crate::types::ResolutionError;
+use crate::types::{Provenance, ResolutionError, ResolvedRoot};
 
-/// An ordered, non-empty list of directory layers, highest first.
+/// An ordered, non-empty list of absolute directory layers.
 ///
 /// The list is closed: only the supplied layers are ever consulted.
+/// Per-file lookup within the returned roots belongs to consumers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayeredRoots {
     layers: Vec<PathBuf>,
@@ -22,7 +19,8 @@ impl LayeredRoots {
     /// # Errors
     ///
     /// Returns [`ResolutionError::EmptyPath`] for an empty list or an
-    /// empty element.
+    /// empty element, and [`ResolutionError::RelativeStartDirectory`]
+    /// for a non-absolute layer.
     pub fn new(
         layers: impl IntoIterator<Item = PathBuf>,
     ) -> Result<Self, ResolutionError> {
@@ -32,68 +30,50 @@ impl LayeredRoots {
         {
             return Err(ResolutionError::EmptyPath);
         }
+        for layer in &layers {
+            if !layer.is_absolute() {
+                return Err(ResolutionError::RelativeStartDirectory(
+                    layer.clone(),
+                ));
+            }
+        }
         Ok(Self { layers })
     }
 
-    /// The layers, highest precedence first.
-    #[must_use]
-    pub fn layers(&self) -> &[PathBuf] {
-        &self.layers
-    }
-
-    /// Finds a relative file in the first layer holding it.
+    /// Resolves the ordered directory candidates with provenance.
     ///
-    /// A nonexistent layer is retained as a candidate and supplies
-    /// nothing; an unreadable layer (a root probe failing with anything
-    /// other than not-found) is a fault. Two layers whose copies of the
-    /// file canonicalize to the same target are an ambiguity error.
+    /// A nonexistent layer is retained as a candidate; a root probe
+    /// failing with anything other than not-found is a fault. Two
+    /// layers canonicalizing to the same directory are an ambiguity
+    /// error. Existence and per-file policy stay with consumers.
     ///
     /// # Errors
     ///
     /// Returns [`ResolutionError::Unreadable`] for an unreadable layer
-    /// and [`ResolutionError::Ambiguous`] for symlink-collapsed copies.
-    pub fn resolve_file(
-        &self,
-        relative: &Path,
-    ) -> Result<Option<PathBuf>, ResolutionError> {
-        crate::types::validate_relative_components(relative)?;
-        let mut found: Option<PathBuf> = None;
-        let mut found_canonical: Option<PathBuf> = None;
+    /// and [`ResolutionError::Ambiguous`] for collapsed directories.
+    pub fn resolve_roots(&self) -> Result<Vec<ResolvedRoot>, ResolutionError> {
+        let mut resolved = Vec::with_capacity(self.layers.len());
+        let mut canonical_seen: Vec<PathBuf> = Vec::new();
         for layer in &self.layers {
-            // Root-level probe distinguishes absence from unreadability.
             match fs::metadata(layer) {
-                Ok(_) => {},
-                Err(error) if error.kind() == ErrorKind::NotFound => {
-                    continue;
+                Ok(_) => {
+                    let canonical = fs::canonicalize(layer)
+                        .unwrap_or_else(|_| layer.clone());
+                    if canonical_seen.contains(&canonical) {
+                        return Err(ResolutionError::Ambiguous(layer.clone()));
+                    }
+                    canonical_seen.push(canonical);
                 },
+                Err(error) if error.kind() == ErrorKind::NotFound => {},
                 Err(_) => {
                     return Err(ResolutionError::Unreadable(layer.clone()));
                 },
             }
-            let candidate = layer.join(relative);
-            match fs::metadata(&candidate) {
-                Ok(metadata) if metadata.is_file() => {
-                    let canonical = fs::canonicalize(&candidate)
-                        .unwrap_or_else(|_| candidate.clone());
-                    if let Some(previous) = &found_canonical
-                        && *previous == canonical
-                    {
-                        return Err(ResolutionError::Ambiguous(candidate));
-                    }
-                    if found.is_none() {
-                        found = Some(candidate);
-                        found_canonical = Some(canonical);
-                    }
-                },
-                Ok(_) => {
-                    return Err(ResolutionError::Unreadable(candidate));
-                },
-                Err(error) if error.kind() == ErrorKind::NotFound => {},
-                Err(_) => {
-                    return Err(ResolutionError::Unreadable(candidate));
-                },
-            }
+            resolved.push(ResolvedRoot {
+                path: layer.clone(),
+                provenance: Provenance::CallerProvided,
+            });
         }
-        Ok(found)
+        Ok(resolved)
     }
 }

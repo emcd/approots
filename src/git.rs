@@ -79,56 +79,33 @@ pub fn validate_cargo_package(
     let manifest_path = checkout.worktree_root.join("Cargo.toml");
     let manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|_| ResolutionError::Unreadable(manifest_path.clone()))?;
-    let found = package_name(&manifest);
+    // A real TOML parse (the declared exception): line scanning
+    // misreads multiline-string contents as tables and keys.
+    let Ok(table) = manifest.parse::<toml::Table>() else {
+        return Err(ResolutionError::UndeterminedPackage(manifest_path));
+    };
+    let Some(package) = table.get("package") else {
+        return Err(ResolutionError::VirtualWorkspace(manifest_path));
+    };
+    let found =
+        package
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().all(|character| {
+                        character.is_alphanumeric()
+                            || matches!(character, '-' | '_' | '.')
+                    })
+            });
     match found {
-        None if manifest.lines().any(|line| line.trim() == "[package]") => {
-            Err(ResolutionError::UndeterminedPackage(manifest_path))
-        },
-        None => Err(ResolutionError::VirtualWorkspace(manifest_path)),
+        None => Err(ResolutionError::UndeterminedPackage(manifest_path)),
         Some(name) if name == expected => Ok(()),
         Some(name) => Err(ResolutionError::IdentityMismatch {
             expected: expected.to_string(),
-            found: Some(name),
+            found: Some(name.to_string()),
         }),
     }
-}
-
-/// Extracts `[package].name` without a TOML dependency.
-///
-/// The key must be exactly `name` (so `name.workspace` inheritance does
-/// not masquerade as a name), the value must be a quoted string, and a
-/// parsed value that is not a plausible package name is treated as
-/// unknown rather than reported as a found name.
-fn package_name(manifest: &str) -> Option<String> {
-    let mut in_package = false;
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_package = trimmed == "[package]";
-            continue;
-        }
-        if !in_package {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "name" {
-            continue;
-        }
-        let value = value.trim();
-        let quote = value.chars().next()?;
-        if quote != '"' && quote != '\'' {
-            return None;
-        }
-        let parsed = value[1..].split(quote).next()?.to_string();
-        let plausible = !parsed.is_empty()
-            && parsed
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
-        return plausible.then_some(parsed);
-    }
-    None
 }
 
 /// Returns the worktree owning the Git common directory.
@@ -142,13 +119,17 @@ fn main_worktree_root(
     worktree_root: &Path,
     git_common_dir: &Path,
 ) -> Result<PathBuf, ResolutionError> {
-    let output = run_git(start, &["worktree", "list", "--porcelain"])?;
-    let text = String::from_utf8(output)
-        .map_err(|_| ResolutionError::GitFailed("non-UTF8 output".into()))?;
-    let entries: Vec<PathBuf> = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .map(|path| PathBuf::from(path.trim()))
+    let output = run_git(start, &["worktree", "list", "--porcelain", "-z"])?;
+    // -z records are NUL-separated with raw path bytes preserved.
+    let entries: Vec<PathBuf> = output
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            record
+                .split(|byte| *byte == b'\n')
+                .next()
+                .and_then(|line| line.strip_prefix(b"worktree ".as_slice()))
+                .map(path_from_bytes)
+        })
         .collect();
     // Git's separate-Git-directory listing names the Git directory's
     // parent as a worktree; only trust the owner match when the real
@@ -170,17 +151,37 @@ fn main_worktree_root(
 }
 
 /// Runs one `git rev-parse` query, classifying failures honestly.
+///
+/// Only the trailing newline framing is stripped; pathname bytes
+/// (including trailing spaces and non-UTF8 names) pass through intact.
 fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
     let output = run_git_raw(start, &["rev-parse", flag])?;
-    let text = String::from_utf8(output)
-        .map_err(|_| ResolutionError::GitFailed("non-UTF8 output".into()))?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let mut bytes = output.as_slice();
+    if bytes.last() == Some(&b'\n') {
+        bytes = &bytes[..bytes.len() - 1];
+        if bytes.last() == Some(&b'\r') {
+            bytes = &bytes[..bytes.len() - 1];
+        }
+    }
+    if bytes.is_empty() {
         return Err(ResolutionError::GitFailed(format!(
             "empty output for {flag}"
         )));
     }
-    Ok(PathBuf::from(trimmed))
+    Ok(path_from_bytes(bytes))
+}
+
+/// Builds a path from raw Git output bytes without lossy conversion.
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Runs a Git command that must succeed, returning stdout bytes.
@@ -253,8 +254,14 @@ fn run_git_status(
     }
     // Set after the blast: env-then-remove would unset it again.
     command.env("GIT_CONFIG_NOSYSTEM", "1");
-    let output = command
-        .output()
-        .map_err(|_| ResolutionError::GitUnavailable)?;
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ResolutionError::GitUnavailable
+        } else {
+            // Includes an inaccessible or nonexistent start directory:
+            // an execution failure, never silent absence.
+            ResolutionError::GitFailed(format!("spawn git: {error}"))
+        }
+    })?;
     Ok((output.status.success(), output.stdout, output.stderr))
 }

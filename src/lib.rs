@@ -46,6 +46,38 @@ pub fn supplied_root(
     })
 }
 
+/// Refuses Windows drive-relative and root-relative root shapes.
+///
+/// On Windows these consult ambient drive state or replace the base
+/// during a join, so they are rejected before any join happens. On
+/// other platforms such prefixes cannot occur.
+fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let mut components = path.components();
+        match components.next() {
+            // Drive-relative (C:foo) has a prefix but no root.
+            Some(Component::Prefix(_)) => {
+                if !matches!(components.next(), Some(Component::RootDir)) {
+                    return Err(ResolutionError::InvalidName(
+                        path.display().to_string(),
+                    ));
+                }
+            },
+            // Root-relative (\foo) consults the ambient drive.
+            Some(Component::RootDir) => {
+                return Err(ResolutionError::InvalidName(
+                    path.display().to_string(),
+                ));
+            },
+            _ => {},
+        }
+    }
+    let _ = path;
+    Ok(())
+}
+
 /// Caller-driven resolver bound to one application name.
 #[derive(Clone, Debug)]
 pub struct Resolver {
@@ -127,10 +159,9 @@ impl Resolver {
                         &self.layout,
                     );
                 },
-                Err(
-                    ResolutionError::NotRepository(_)
-                    | ResolutionError::GitUnavailable,
-                ) => {},
+                // Only genuine absence of a repository falls through;
+                // execution failures surface to the caller.
+                Err(ResolutionError::NotRepository(_)) => {},
                 Err(error) => return Err(error),
             }
         }
@@ -145,6 +176,7 @@ impl Resolver {
         if explicit.as_os_str().is_empty() {
             return Err(ResolutionError::EmptyPath);
         }
+        validate_root_shape(explicit)?;
         let path: PathBuf = if explicit.is_absolute() {
             explicit.to_path_buf()
         } else {
@@ -158,7 +190,9 @@ impl Resolver {
                     start.to_path_buf(),
                 ));
             }
-            types::normalize_lexical(&start.join(explicit))
+            // Preserve `..` semantically: lexical popping would
+            // retarget paths through symlinked components.
+            start.join(explicit)
         };
         Ok(ResolvedRoot {
             path,

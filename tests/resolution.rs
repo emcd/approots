@@ -278,41 +278,85 @@ fn layers_are_closed_ordered_and_ambiguity_is_typed() {
     use approots::LayeredRoots;
 
     assert!(LayeredRoots::new(Vec::new()).is_err());
+    assert!(LayeredRoots::new([PathBuf::from("relative/layer")]).is_err());
     let first = temp_dir("layer-first");
-    let second = temp_dir("layer-second");
-    fs::write(second.join("app.toml"), "second").expect("second file");
+    let absent = temp_dir("layer-absent-parent").join("missing");
     let roots =
-        LayeredRoots::new([first.clone(), second.clone()]).expect("roots");
-    let found = roots
-        .resolve_file(Path::new("app.toml"))
-        .expect("lookup")
-        .expect("found in second layer");
-    assert_eq!(found, second.join("app.toml"));
-
-    fs::write(first.join("app.toml"), "first").expect("first file");
-    let found = roots
-        .resolve_file(Path::new("app.toml"))
-        .expect("lookup")
-        .expect("found in first layer");
-    assert_eq!(found, first.join("app.toml"));
+        LayeredRoots::new([first.clone(), absent.clone()]).expect("roots");
+    let resolved = roots.resolve_roots().expect("resolve roots");
+    assert_eq!(resolved.len(), 2, "absent layer retained as candidate");
+    assert_eq!(resolved[0].path, first);
+    assert_eq!(resolved[1].path, absent);
+    assert!(
+        resolved
+            .iter()
+            .all(|root| root.provenance == Provenance::CallerProvided)
+    );
 
     #[cfg(unix)]
     {
         let target = temp_dir("layer-target");
-        let shared = target.join("shared.toml");
-        fs::write(&shared, "shared").expect("shared file");
-        let layer_a = temp_dir("layer-a");
-        let layer_b = temp_dir("layer-b");
-        std::os::unix::fs::symlink(&shared, layer_a.join("app.toml"))
-            .expect("symlink a");
-        std::os::unix::fs::symlink(&shared, layer_b.join("app.toml"))
-            .expect("symlink b");
+        let layer_a = temp_dir("layer-a").join("link");
+        let layer_b = temp_dir("layer-b").join("link");
+        std::os::unix::fs::symlink(&target, &layer_a).expect("link a");
+        std::os::unix::fs::symlink(&target, &layer_b).expect("link b");
         let collapsed = LayeredRoots::new([layer_a, layer_b]).expect("roots");
         assert!(matches!(
-            collapsed.resolve_file(Path::new("app.toml")),
+            collapsed.resolve_roots(),
             Err(ResolutionError::Ambiguous(_))
         ));
     }
+}
+
+#[test]
+fn explicit_dotdot_is_preserved_and_platform_validates() {
+    let base = temp_dir("dotdot");
+    let resolver = Resolver::new("fixture-app").expect("resolver");
+    let explicit = PathBuf::from("alias/../state");
+    let resolved = resolver
+        .resolve(
+            DirectoryKind::State,
+            Some(&explicit),
+            Some(&base),
+            DevelopmentScope::Worktree,
+            None,
+        )
+        .expect("explicit with dotdot");
+    assert_eq!(resolved.path, base.join("alias/../state"));
+    assert!(resolved.path.is_absolute());
+    assert!(approots::platform_root("a/b", DirectoryKind::State).is_err());
+    assert!(approots::platform_root("My App", DirectoryKind::Cache).is_ok());
+
+    let dev = Resolver::new("fixture-app")
+        .expect("resolver")
+        .development_mode(true);
+    let missing = base.join("does-not-exist");
+    assert!(
+        dev.resolve(
+            DirectoryKind::State,
+            None,
+            Some(&missing),
+            DevelopmentScope::Worktree,
+            None,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn multiline_decoy_manifest_does_not_spoof_identity() {
+    let repo = git_repo("decoy");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\ndescription = \"\"\"\n[package]\nname = \"trusted\"\n\"\"\"\nname = \"foreign\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("decoy manifest");
+    let checkout = discover_checkout(&repo).expect("discover");
+    assert!(matches!(
+        validate_cargo_package(&checkout, "trusted"),
+        Err(ResolutionError::IdentityMismatch { .. })
+    ));
+    validate_cargo_package(&checkout, "foreign").expect("real name");
 }
 
 #[test]
