@@ -114,6 +114,9 @@ fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
         .args(["rev-parse", flag])
         .current_dir(start)
         .env("GIT_CONFIG_NOSYSTEM", "1");
+    // Blast-by-prefix catches future GIT_* redirects by default.
+    // Revisit selective retention only when a consumer must pass one
+    // specific GIT_* variable through deliberately.
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             command.env_remove(&key);

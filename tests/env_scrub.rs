@@ -43,6 +43,11 @@ fn hostile_git_directory_does_not_divert_discovery() {
         std::env::set_var("GIT_WORK_TREE", "/nonexistent");
         std::env::set_var("GIT_INDEX_FILE", "/nonexistent/index");
         std::env::set_var("GIT_COMMON_DIR", "/nonexistent/common");
+        std::env::set_var("GIT_OBJECT_DIRECTORY", "/nonexistent/objects");
+        std::env::set_var(
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "/nonexistent/alt-objects",
+        );
     }
     let checkout = discover_checkout(&repo);
     // SAFETY: same single-test process as above.
@@ -51,6 +56,8 @@ fn hostile_git_directory_does_not_divert_discovery() {
         std::env::remove_var("GIT_WORK_TREE");
         std::env::remove_var("GIT_INDEX_FILE");
         std::env::remove_var("GIT_COMMON_DIR");
+        std::env::remove_var("GIT_OBJECT_DIRECTORY");
+        std::env::remove_var("GIT_ALTERNATE_OBJECT_DIRECTORIES");
     }
     let checkout = checkout.expect("discovery survives contamination");
     assert_eq!(checkout.worktree_root, PathBuf::from(&repo));
