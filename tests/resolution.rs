@@ -85,8 +85,12 @@ fn normal_clone_collapses_roots_from_nested_directory() {
     assert_eq!(checkout.worktree_root, repo);
     assert_eq!(checkout.common_worktree_root, repo);
     // Regression: relative --git-common-dir resolves against the
-    // invocation directory, never the worktree root.
-    assert_eq!(checkout.git_common_dir, repo.join(".git"));
+    // invocation directory, never the worktree root. The returned
+    // path keeps its semantic form; canonical comparison reconciles.
+    assert_eq!(
+        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        repo.join(".git")
+    );
 }
 
 #[test]
@@ -397,7 +401,12 @@ fn symlinked_alias_discovers_real_checkout() {
     std::os::unix::fs::symlink(&repo, &alias).expect("alias link");
     let checkout = discover_checkout(&alias).expect("discover alias");
     assert_eq!(checkout.worktree_root, repo);
-    assert_eq!(checkout.git_common_dir, repo.join(".git"));
+    // The returned common dir keeps its semantic (alias) form and
+    // names the real .git under canonical comparison.
+    assert_eq!(
+        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        repo.join(".git")
+    );
     assert_eq!(checkout.common_worktree_root, repo);
 }
 
@@ -416,6 +425,7 @@ fn trailing_space_checkout_name_is_preserved() {
     assert_eq!(checkout.worktree_root, repo);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn xdg_provenance_comes_from_one_snapshot() {
     // Child mode: run the assertions under the spawned environment.
@@ -467,4 +477,36 @@ fn xdg_provenance_comes_from_one_snapshot() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn exotic_checkout_names_survive_discovery() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let parent = temp_dir("exotic");
+    for name in [
+        std::ffi::OsString::from("sp ace"),
+        std::ffi::OsString::from("trail "),
+        std::ffi::OsString::from_vec(b"nonutf8-\xff".to_vec()),
+    ] {
+        let repo = parent.join(&name);
+        fs::create_dir_all(&repo).expect("exotic repo");
+        git(&repo, &["init", "-q", "-b", "master"]);
+        let checkout = discover_checkout(&repo).expect("discover exotic");
+        assert_eq!(checkout.worktree_root, repo);
+    }
+    // A symlinked alias containing .. still names the real checkout.
+    let repo = git_repo("alias-dotdot");
+    fs::create_dir_all(repo.join("a")).expect("dotdot intermediate");
+    let alias_parent = temp_dir("alias-dd-parent");
+    let alias = alias_parent.join("alias");
+    std::os::unix::fs::symlink(&repo, &alias).expect("alias link");
+    let start = alias.join("a/../");
+    let checkout = discover_checkout(&start).expect("alias dotdot");
+    assert_eq!(checkout.worktree_root, repo);
+    assert_eq!(
+        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        repo.join(".git")
+    );
 }

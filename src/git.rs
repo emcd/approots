@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-use crate::types::{GitCheckout, ResolutionError, normalize_lexical};
+use crate::types::{GitCheckout, ResolutionError};
 
 /// Discovers checkout topology from an explicit start directory.
 ///
@@ -37,11 +37,12 @@ pub fn discover_checkout(
     } else {
         common_raw
     };
-    // The common directory is Git-observed and must exist: canonicalize
-    // it as an observation (never as caller-path propagation) so owner
-    // comparisons reconcile without retargeting through symlinks.
-    let git_common_dir = fs::canonicalize(&common_joined)
-        .unwrap_or_else(|_| normalize_lexical(&common_joined));
+    // The returned common directory keeps its semantic form (any
+    // `..` components intact). Canonical values are computed only
+    // for owner comparison inside `main_worktree_root`, never for
+    // the propagated path; if comparison cannot be established the
+    // outcome is a typed failure, never a lexical retargeting.
+    let git_common_dir = common_joined;
     // A submodule common directory is the sequence
     // <super>/.git/modules/<name>, never a bare "modules" component.
     let components: Vec<_> = git_common_dir
@@ -137,10 +138,19 @@ fn main_worktree_root(
     let entries = entries;
     // Git's separate-Git-directory listing names the Git directory's
     // parent as a worktree; only trust the owner match when the real
-    // worktree is itself listed.
+    // worktree is itself listed. Matching compares canonical values
+    // only; the propagated paths are never rewritten.
     if entries.iter().any(|entry| entry == worktree_root) {
+        let common_canonical =
+            fs::canonicalize(git_common_dir).map_err(|error| {
+                ResolutionError::GitFailed(format!(
+                    "cannot establish common-directory comparison: {error}"
+                ))
+            })?;
         for entry in &entries {
-            if entry.join(".git") == git_common_dir {
+            if let Ok(candidate) = fs::canonicalize(entry.join(".git"))
+                && candidate == common_canonical
+            {
                 return Ok(entry.clone());
             }
         }

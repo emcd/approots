@@ -33,17 +33,19 @@ pub fn sanitize_name(name: &str) -> String {
 #[derive(Clone, Debug)]
 struct PlatformSnapshot {
     /// Raw XDG values per kind (Linux override inputs).
-    xdg: [Option<String>; 4],
+    xdg: [Option<PathBuf>; 4],
     /// Captured home directory, when any.
     home: Option<PathBuf>,
 }
 
 impl PlatformSnapshot {
     fn capture(base_dirs: Option<&BaseDirs>) -> Self {
+        // Native bytes end to end: no lossy string conversion, so
+        // a non-UTF8 absolute XDG root survives intact.
         let read = |name: &str| {
             std::env::var_os(name)
                 .filter(|value| !value.is_empty())
-                .map(|value| value.to_string_lossy().into_owned())
+                .map(PathBuf::from)
         };
         Self {
             xdg: [
@@ -75,11 +77,13 @@ impl PlatformSnapshot {
                 DirectoryKind::Cache => 2,
                 DirectoryKind::Data => 3,
             };
-            if let Some(raw) = &self.xdg[index] {
-                let candidate = PathBuf::from(raw);
-                if candidate.is_absolute() {
-                    return (Some(candidate), Provenance::PlatformEnvironment);
-                }
+            if let Some(candidate) = &self.xdg[index]
+                && candidate.is_absolute()
+            {
+                return (
+                    Some(candidate.clone()),
+                    Provenance::PlatformEnvironment,
+                );
             }
             let default = self.home.as_ref().map(|home| match kind {
                 DirectoryKind::Configuration => home.join(".config"),
@@ -119,7 +123,9 @@ pub fn platform_root(
         DirectoryKind::Data => Some(dirs.data_dir().to_path_buf()),
     });
     let (base, provenance) = snapshot.base(kind, provider_default);
-    let Some(base) = base else {
+    let Some(base) = base.filter(|base| base.is_absolute()) else {
+        // A relative captured home or provider base must never
+        // propagate as a relative platform root.
         return Err(ResolutionError::Unavailable(kind));
     };
     Ok(ResolvedRoot {

@@ -68,6 +68,27 @@ fn hostile_git_directory_does_not_divert_discovery() {
         std::env::set_var("PATH", "/nonexistent/empty-path");
     }
     let missing = approots::discover_checkout(&repo);
+    assert!(matches!(
+        missing,
+        Err(approots::ResolutionError::GitUnavailable)
+    ));
+
+    // Through Resolver the missing executable surfaces identically;
+    // it never becomes a silent platform fallback.
+    let resolver = approots::Resolver::new("fixture-app")
+        .expect("resolver")
+        .development_mode(true);
+    // SAFETY: same single-test process as above.
+    unsafe {
+        std::env::set_var("PATH", "/nonexistent/empty-path");
+    }
+    let via_resolver = resolver.resolve(
+        approots::DirectoryKind::State,
+        None,
+        Some(&repo),
+        approots::DevelopmentScope::Worktree,
+        None,
+    );
     // SAFETY: same single-test process as above.
     unsafe {
         match saved_path {
@@ -76,7 +97,7 @@ fn hostile_git_directory_does_not_divert_discovery() {
         }
     }
     assert!(matches!(
-        missing,
+        via_resolver,
         Err(approots::ResolutionError::GitUnavailable)
     ));
 }
