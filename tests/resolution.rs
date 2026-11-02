@@ -335,16 +335,16 @@ fn explicit_dotdot_is_preserved_and_platform_validates() {
         .expect("resolver")
         .development_mode(true);
     let missing = base.join("does-not-exist");
-    assert!(
+    assert!(matches!(
         dev.resolve(
             DirectoryKind::State,
             None,
             Some(&missing),
             DevelopmentScope::Worktree,
             None,
-        )
-        .is_err()
-    );
+        ),
+        Err(ResolutionError::GitFailed(_))
+    ));
 }
 
 #[test]
@@ -429,12 +429,19 @@ fn trailing_space_checkout_name_is_preserved() {
 #[test]
 fn xdg_provenance_comes_from_one_snapshot() {
     // Child mode: run the assertions under the spawned environment.
+    if std::env::var("APPROOTS_XDG_CHILD").as_deref() == Ok("unavailable") {
+        assert!(matches!(
+            approots::platform_root("fixture-app", DirectoryKind::Cache),
+            Err(ResolutionError::Unavailable(_))
+        ));
+        return;
+    }
     if std::env::var_os("APPROOTS_XDG_CHILD").is_some() {
         let resolved =
             approots::platform_root("fixture-app", DirectoryKind::Cache)
                 .expect("child platform root");
         let expected_base = PathBuf::from(
-            std::env::var("APPROOTS_EXPECT_BASE").expect("expected base"),
+            std::env::var_os("APPROOTS_EXPECT_BASE").expect("expected base"),
         );
         assert_eq!(resolved.path, expected_base.join("fixture-app"));
         let expected_provenance = match std::env::var("APPROOTS_EXPECT_PROV")
@@ -449,6 +456,57 @@ fn xdg_provenance_comes_from_one_snapshot() {
     }
     let home = temp_dir("xdg-home");
     let override_dir = temp_dir("xdg-override");
+    #[cfg(unix)]
+    {
+        // Native-byte XDG root survives without lossy conversion.
+        use std::os::unix::ffi::OsStringExt;
+        let raw_root = std::ffi::OsString::from_vec(
+            override_dir
+                .as_os_str()
+                .as_encoded_bytes()
+                .iter()
+                .copied()
+                .chain([0xFF])
+                .collect::<Vec<u8>>(),
+        );
+        let exe = std::env::current_exe().expect("test exe");
+        let output = Command::new(&exe)
+            .args([
+                "xdg_provenance_comes_from_one_snapshot",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("APPROOTS_XDG_CHILD", "1")
+            .env("APPROOTS_EXPECT_BASE", PathBuf::from(raw_root.clone()))
+            .env("APPROOTS_EXPECT_PROV", "env")
+            .env("XDG_CACHE_HOME", raw_root)
+            .env("HOME", &home)
+            .output()
+            .expect("spawn nonutf8 xdg child");
+        assert!(
+            output.status.success(),
+            "nonutf8 xdg child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // A relative HOME yields typed Unavailable, never a
+        // propagated relative platform root.
+        let output = Command::new(&exe)
+            .args([
+                "xdg_provenance_comes_from_one_snapshot",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("APPROOTS_XDG_CHILD", "unavailable")
+            .env_remove("XDG_CACHE_HOME")
+            .env("HOME", "relative-home")
+            .output()
+            .expect("spawn relative-home child");
+        assert!(
+            output.status.success(),
+            "relative-home child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let exe = std::env::current_exe().expect("test exe");
     for (xdg_value, expected_base, expected_provenance) in [
         (
@@ -481,6 +539,28 @@ fn xdg_provenance_comes_from_one_snapshot() {
 
 #[cfg(unix)]
 #[test]
+fn symlink_dotdot_start_keeps_semantic_common_dir() {
+    // alias -> repo/sub; starting at alias/.. names the repo root to
+    // the OS but lexically pops to the alias parent, which is not a
+    // checkout at all. The returned common dir must keep the semantic
+    // alias/.. form (lexical popping would retarget it).
+    let repo = git_repo("symlink-dd");
+    fs::create_dir_all(repo.join("sub")).expect("sub dir");
+    let parent = temp_dir("symlink-dd-parent");
+    let alias = parent.join("alias");
+    std::os::unix::fs::symlink(repo.join("sub"), &alias).expect("alias");
+    let start = alias.join("..");
+    let checkout = discover_checkout(&start).expect("discover");
+    assert_eq!(checkout.worktree_root, repo);
+    assert_eq!(checkout.git_common_dir, alias.join("../.git"));
+    assert_eq!(
+        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        repo.join(".git")
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn exotic_checkout_names_survive_discovery() {
     use std::os::unix::ffi::OsStringExt;
 
@@ -488,6 +568,8 @@ fn exotic_checkout_names_survive_discovery() {
     for name in [
         std::ffi::OsString::from("sp ace"),
         std::ffi::OsString::from("trail "),
+        std::ffi::OsString::from("new\nline"),
+        std::ffi::OsString::from("carriage\r"),
         std::ffi::OsString::from_vec(b"nonutf8-\xff".to_vec()),
     ] {
         let repo = parent.join(&name);
