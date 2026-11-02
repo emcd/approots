@@ -191,6 +191,35 @@ fn precedence_prefers_explicit_then_platform_when_dev_disabled() {
 }
 
 #[test]
+fn clone_under_modules_directory_still_discovers() {
+    let parent = temp_dir("modparent");
+    let repo = parent.join("modules/proj");
+    fs::create_dir_all(&repo).expect("modules parent");
+    git(&repo, &["init", "-q", "-b", "master"]);
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("f.txt"), "x").expect("seed");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "init"]);
+    let checkout = discover_checkout(&repo).expect("discover modules");
+    assert_eq!(checkout.worktree_root, repo);
+}
+
+#[test]
+fn corrupt_repository_is_not_a_repository_by_git_output() {
+    // Pinned decision: Git reports a corrupt HEAD identically to a
+    // missing repository, so discovery classifies it NotRepository
+    // (and the precedence chain falls through to the platform tier)
+    // rather than re-implementing Git discovery with a .git probe.
+    let repo = git_repo("corrupt");
+    fs::write(repo.join(".git/HEAD"), "garbage\n").expect("corrupt");
+    assert!(matches!(
+        discover_checkout(&repo),
+        Err(ResolutionError::NotRepository(_))
+    ));
+}
+
+#[test]
 fn bare_repository_is_typed_unsupported() {
     let bare = temp_dir("bare");
     git(&bare, &["init", "-q", "--bare", "-b", "master"]);

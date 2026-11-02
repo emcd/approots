@@ -37,10 +37,16 @@ pub fn discover_checkout(
         common_raw
     };
     let git_common_dir = normalize_lexical(&common_joined);
-    if git_common_dir
+    // A submodule common directory is the sequence
+    // <super>/.git/modules/<name>, never a bare "modules" component.
+    let components: Vec<_> = git_common_dir
         .components()
-        .any(|component| component.as_os_str() == "modules")
-    {
+        .map(|component| component.as_os_str().to_os_string())
+        .collect();
+    let is_submodule_layout = components
+        .windows(2)
+        .any(|pair| pair[0] == ".git" && pair[1] == "modules");
+    if is_submodule_layout {
         return Err(ResolutionError::UnsupportedTopology(format!(
             "submodule common directory {}",
             git_common_dir.display()
@@ -75,6 +81,9 @@ pub fn validate_cargo_package(
         .map_err(|_| ResolutionError::Unreadable(manifest_path.clone()))?;
     let found = package_name(&manifest);
     match found {
+        None if manifest.lines().any(|line| line.trim() == "[package]") => {
+            Err(ResolutionError::UndeterminedPackage(manifest_path))
+        },
         None => Err(ResolutionError::VirtualWorkspace(manifest_path)),
         Some(name) if name == expected => Ok(()),
         Some(name) => Err(ResolutionError::IdentityMismatch {

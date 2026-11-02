@@ -103,6 +103,8 @@ pub enum ResolutionError {
     },
     /// The checkout root is a virtual Cargo workspace.
     VirtualWorkspace(PathBuf),
+    /// A `[package]` table exists but its name is undeterminable.
+    UndeterminedPackage(PathBuf),
     /// The platform offers no root for the requested kind.
     Unavailable(DirectoryKind),
     /// A layer or manifest could not be read.
@@ -144,6 +146,11 @@ impl Display for ResolutionError {
             Self::VirtualWorkspace(path) => write!(
                 formatter,
                 "{} is a virtual cargo workspace",
+                path.display()
+            ),
+            Self::UndeterminedPackage(path) => write!(
+                formatter,
+                "{} has a package table with an undeterminable name",
                 path.display()
             ),
             Self::Unavailable(kind) => {
