@@ -57,7 +57,7 @@ The library SHALL report exactly one provenance value for every resolved root, d
 
 ### Requirement: Honest provider adapter
 
-The library SHALL obtain each platform root and its provenance from the same captured inputs, SHALL NOT infer provenance by path equality, and SHALL NOT label an opaque provider result `PlatformDefault` when the provider may have consulted the environment. When the provider offers no root for a kind on a supported platform (for example no state directory on some macOS/Windows configurations), the library SHALL return a typed unavailable outcome or a documented fallback, never a fabricated path; missing-home behavior follows the same rule.
+The library SHALL obtain each platform root and its provenance from the same captured inputs, SHALL NOT infer provenance by path equality, and SHALL NOT label an opaque provider result `PlatformDefault` when an environment variable may have overridden the provider's default. (An environment variable that merely inputs to computing a default, as `HOME`/`APPDATA` do on macOS/Windows, is not an override.) When the provider offers no root for a kind on a supported platform (for example no state directory on some macOS/Windows configurations), the library SHALL return a typed unavailable outcome or a documented fallback, never a fabricated path; missing-home behavior follows the same rule.
 
 #### Scenario: Missing state root is typed, not fabricated
 

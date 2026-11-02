@@ -10,15 +10,17 @@ use crate::types::{GitCheckout, ResolutionError, normalize_lexical};
 /// Discovers checkout topology from an explicit start directory.
 ///
 /// Relative `--git-common-dir` output resolves against `start`, the exact
-/// working directory the Git subprocess runs in.
+/// working directory the Git subprocess runs in. The common worktree
+/// root comes from `git worktree list`, never from assuming the common
+/// directory's parent is its owner.
 ///
 /// # Errors
 ///
 /// Returns [`ResolutionError::GitUnavailable`] when Git cannot run,
-/// [`ResolutionError::NotRepository`] outside a repository, and
-/// [`ResolutionError::UnsupportedTopology`] for layouts whose common
-/// directory is not a `.git` directory (bare repositories, separate Git
-/// directories, and submodule layouts included).
+/// [`ResolutionError::NotRepository`] outside a repository,
+/// [`ResolutionError::GitFailed`] for other Git failures, and
+/// [`ResolutionError::UnsupportedTopology`] for bare repositories,
+/// submodule layouts, and other unmodelled topologies.
 pub fn discover_checkout(
     start: &Path,
 ) -> Result<GitCheckout, ResolutionError> {
@@ -35,24 +37,20 @@ pub fn discover_checkout(
         common_raw
     };
     let git_common_dir = normalize_lexical(&common_joined);
-    let is_dot_git = git_common_dir
-        .file_name()
-        .is_some_and(|name| name == ".git");
-    if !is_dot_git {
+    if git_common_dir
+        .components()
+        .any(|component| component.as_os_str() == "modules")
+    {
         return Err(ResolutionError::UnsupportedTopology(format!(
-            "common directory {} is not a .git directory",
+            "submodule common directory {}",
             git_common_dir.display()
         )));
     }
-    let Some(common_worktree_root) = git_common_dir.parent() else {
-        return Err(ResolutionError::UnsupportedTopology(format!(
-            "common directory {} has no parent",
-            git_common_dir.display()
-        )));
-    };
+    let common_worktree_root =
+        main_worktree_root(start, &worktree_root, &git_common_dir)?;
     Ok(GitCheckout {
         worktree_root,
-        common_worktree_root: common_worktree_root.to_path_buf(),
+        common_worktree_root,
         git_common_dir,
     })
 }
@@ -87,6 +85,11 @@ pub fn validate_cargo_package(
 }
 
 /// Extracts `[package].name` without a TOML dependency.
+///
+/// The key must be exactly `name` (so `name.workspace` inheritance does
+/// not masquerade as a name), the value must be a quoted string, and a
+/// parsed value that is not a plausible package name is treated as
+/// unknown rather than reported as a found name.
 fn package_name(manifest: &str) -> Option<String> {
     let mut in_package = false;
     for line in manifest.lines() {
@@ -95,40 +98,72 @@ fn package_name(manifest: &str) -> Option<String> {
             in_package = trimmed == "[package]";
             continue;
         }
-        if in_package && trimmed.starts_with("name") {
-            let value = trimmed.split('=').nth(1)?.trim();
-            return value
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string()
-                .into();
+        if !in_package {
+            continue;
         }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let value = value.trim();
+        let quote = value.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let parsed = value[1..].split(quote).next()?.to_string();
+        let plausible = !parsed.is_empty()
+            && parsed
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        return plausible.then_some(parsed);
     }
     None
 }
 
-/// Runs one `git rev-parse` query with a scrubbed environment.
-fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
-    let mut command = Command::new("git");
-    command
-        .args(["rev-parse", flag])
-        .current_dir(start)
-        .env("GIT_CONFIG_NOSYSTEM", "1");
-    // Blast-by-prefix catches future GIT_* redirects by default.
-    // Revisit selective retention only when a consumer must pass one
-    // specific GIT_* variable through deliberately.
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(&key);
+/// Returns the worktree owning the Git common directory.
+///
+/// The owner is the listed worktree whose `.git` directory is the
+/// common directory. `git worktree list` alone is not sufficient: for
+/// a separate Git directory it names the Git directory's parent, so a
+/// single-worktree checkout falls back to the current worktree root.
+fn main_worktree_root(
+    start: &Path,
+    worktree_root: &Path,
+    git_common_dir: &Path,
+) -> Result<PathBuf, ResolutionError> {
+    let output = run_git(start, &["worktree", "list", "--porcelain"])?;
+    let text = String::from_utf8(output)
+        .map_err(|_| ResolutionError::GitFailed("non-UTF8 output".into()))?;
+    let entries: Vec<PathBuf> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| PathBuf::from(path.trim()))
+        .collect();
+    // Git's separate-Git-directory listing names the Git directory's
+    // parent as a worktree; only trust the owner match when the real
+    // worktree is itself listed.
+    if entries.iter().any(|entry| entry == worktree_root) {
+        for entry in &entries {
+            if entry.join(".git") == git_common_dir {
+                return Ok(entry.clone());
+            }
         }
     }
-    let output = command
-        .output()
-        .map_err(|_| ResolutionError::GitUnavailable)?;
-    if !output.status.success() {
-        return Err(ResolutionError::NotRepository(start.to_path_buf()));
+    if entries.len() == 1 {
+        return Ok(worktree_root.to_path_buf());
     }
-    let text = String::from_utf8(output.stdout)
+    Err(ResolutionError::UnsupportedTopology(format!(
+        "no listed worktree owns common directory {}",
+        git_common_dir.display()
+    )))
+}
+
+/// Runs one `git rev-parse` query, classifying failures honestly.
+fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
+    let output = run_git_raw(start, &["rev-parse", flag])?;
+    let text = String::from_utf8(output)
         .map_err(|_| ResolutionError::GitFailed("non-UTF8 output".into()))?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -137,4 +172,80 @@ fn rev_parse(start: &Path, flag: &str) -> Result<PathBuf, ResolutionError> {
         )));
     }
     Ok(PathBuf::from(trimmed))
+}
+
+/// Runs a Git command that must succeed, returning stdout bytes.
+fn run_git(start: &Path, args: &[&str]) -> Result<Vec<u8>, ResolutionError> {
+    let (status_success, stdout, stderr) = run_git_status(start, args)?;
+    if status_success {
+        return Ok(stdout);
+    }
+    Err(classify_failure(start, &stderr))
+}
+
+/// Runs a Git command, mapping spawn failure to `GitUnavailable`.
+fn run_git_raw(
+    start: &Path,
+    args: &[&str],
+) -> Result<Vec<u8>, ResolutionError> {
+    let (status_success, stdout, stderr) = run_git_status(start, args)?;
+    if status_success {
+        return Ok(stdout);
+    }
+    Err(classify_failure(start, &stderr))
+}
+
+/// Separates "not a repository" from every other Git failure.
+///
+/// A directory Git recognizes (`--git-dir` succeeds) whose worktree
+/// query fails is bare (unsupported topology) or broken (a surfaced
+/// failure), never a silent "not a repository".
+fn classify_failure(start: &Path, stderr: &[u8]) -> ResolutionError {
+    let message = String::from_utf8_lossy(stderr).trim().to_string();
+    if run_git_status(start, &["rev-parse", "--git-dir"])
+        .is_ok_and(|(success, _, _)| success)
+    {
+        let bare =
+            run_git_status(start, &["rev-parse", "--is-bare-repository"])
+                .ok()
+                .filter(|(success, _, _)| *success)
+                .map(|(_, stdout, _)| {
+                    String::from_utf8_lossy(&stdout).trim() == "true"
+                })
+                .unwrap_or(false);
+        if bare {
+            return ResolutionError::UnsupportedTopology(format!(
+                "bare repository at {}",
+                start.display()
+            ));
+        }
+        return ResolutionError::GitFailed(message);
+    }
+    if message.contains("not a git repository") {
+        return ResolutionError::NotRepository(start.to_path_buf());
+    }
+    ResolutionError::GitFailed(message)
+}
+
+/// Spawns Git with a scrubbed environment.
+fn run_git_status(
+    start: &Path,
+    args: &[&str],
+) -> Result<(bool, Vec<u8>, Vec<u8>), ResolutionError> {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(start);
+    // Blast-by-prefix catches future GIT_* redirects by default.
+    // Revisit selective retention only when a consumer must pass one
+    // specific GIT_* variable through deliberately.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(&key);
+        }
+    }
+    // Set after the blast: env-then-remove would unset it again.
+    command.env("GIT_CONFIG_NOSYSTEM", "1");
+    let output = command
+        .output()
+        .map_err(|_| ResolutionError::GitUnavailable)?;
+    Ok((output.status.success(), output.stdout, output.stderr))
 }

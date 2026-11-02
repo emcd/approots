@@ -20,15 +20,13 @@ fn hostile_git_directory_does_not_divert_discovery() {
         // Fixture-init git calls get the same prefix blast as the
         // library: hooks and CI export GIT_* routing variables.
         let mut command = Command::new("git");
-        command
-            .args(&args)
-            .current_dir(&repo)
-            .env("GIT_CONFIG_NOSYSTEM", "1");
+        command.args(&args).current_dir(&repo);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_") {
                 command.env_remove(&key);
             }
         }
+        command.env("GIT_CONFIG_NOSYSTEM", "1");
         if args[0] == "add" {
             fs::write(repo.join("f.txt"), "x").expect("seed file");
         }
@@ -62,4 +60,23 @@ fn hostile_git_directory_does_not_divert_discovery() {
     let checkout = checkout.expect("discovery survives contamination");
     assert_eq!(checkout.worktree_root, PathBuf::from(&repo));
     assert_eq!(checkout.git_common_dir, repo.join(".git"));
+
+    // Missing Git is an explicit outcome, never a silent fallback.
+    let saved_path = std::env::var_os("PATH");
+    // SAFETY: same single-test process as above.
+    unsafe {
+        std::env::set_var("PATH", "/nonexistent/empty-path");
+    }
+    let missing = approots::discover_checkout(&repo);
+    // SAFETY: same single-test process as above.
+    unsafe {
+        match saved_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert!(matches!(
+        missing,
+        Err(approots::ResolutionError::GitUnavailable)
+    ));
 }

@@ -7,11 +7,13 @@
 
 pub mod development;
 pub mod git;
+pub mod layers;
 pub mod platform;
 pub mod types;
 
 pub use development::{DevelopmentLayout, development_root};
 pub use git::{discover_checkout, validate_cargo_package};
+pub use layers::LayeredRoots;
 pub use platform::{platform_root, sanitize_name};
 pub use types::{
     DevelopmentScope, DirectoryKind, GitCheckout, Provenance, ResolutionError,

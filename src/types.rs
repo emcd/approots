@@ -107,6 +107,8 @@ pub enum ResolutionError {
     Unavailable(DirectoryKind),
     /// A layer or manifest could not be read.
     Unreadable(PathBuf),
+    /// Two candidates canonicalize to the same target.
+    Ambiguous(PathBuf),
 }
 
 impl Display for ResolutionError {
@@ -149,6 +151,13 @@ impl Display for ResolutionError {
             },
             Self::Unreadable(path) => {
                 write!(formatter, "cannot read {}", path.display())
+            },
+            Self::Ambiguous(path) => {
+                write!(
+                    formatter,
+                    "ambiguous candidates collapse to {}",
+                    path.display()
+                )
             },
         }
     }

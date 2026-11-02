@@ -14,6 +14,7 @@
 - [x] 3.1 Implement `.auxiliary` common/worktree candidates with caller-overridable layout (read-only)
 - [x] 3.2 Wrap platform-directory primitive with provenance preservation
 - [x] 3.3 Implement precedence chain with per-result provenance reporting
+- [x] 3.4 Implement ordered closed layer lists with fault-on-unreadable and typed ambiguity
 
 ## 4. Verification
 
