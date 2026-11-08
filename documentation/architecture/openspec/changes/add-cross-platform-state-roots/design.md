@@ -22,6 +22,7 @@ The `directories` provider returns no state root on Windows or macOS (`state_dir
 - **Build on `directories`, no new crate:** the missing piece is one base selection in our adapter, not a provider gap in the other kinds. Rolling our own Known Folder calls would duplicate the provider for no gain.
 - **Provenance stays `PlatformDefault`:** the Known Folder API and the macOS home layout are default-computing inputs; the honest-adapter requirement already distinguishes inputs-to-a-default from overrides. Nothing is relabelled.
 - **Junction coverage by capability probe:** Windows test fixtures create a directory symlink where permitted and a junction otherwise, so alias discovery is exercised on either runner configuration without a new dependency.
+- **Distinct directory classes as a builder option:** consumers needing kind isolation on aliased platforms set `distinct_directory_classes` once on the `Resolver` builder — deliberately per-application, never per call, so one application cannot split its own files across two layouts. The platform tier then appends the class segment beneath the application directory on Windows and macOS. Linux is unaffected (its bases already separate classes), and the free `platform_root` function always uses the standard layout.
 
 ## Risks / Trade-offs
 

@@ -17,7 +17,12 @@ On Windows, the library SHALL base the state root on the platform's local applic
 #### Scenario: Platform kinds may share one physical root
 
 - **WHEN** a caller resolves `State` and `Cache` on Windows, or `State`, `Configuration`, and `Data` on macOS
-- **THEN** the aliased kinds return the same physical root (base + application name), and the library makes no promise of per-kind physical isolation on the platform tier; consumers needing isolation supply distinct explicit roots.
+- **THEN** the aliased kinds return the same physical root (base + application name), and the library makes no promise of per-kind physical isolation on the platform tier; consumers needing isolation supply distinct explicit roots or request distinct directory classes.
+
+#### Scenario: Distinct directory classes on request
+
+- **WHEN** a caller sets the resolver's `distinct_directory_classes` builder option and resolves any kind on Windows or macOS
+- **THEN** the library appends the kind's class segment beneath the application directory (`<base>/<application>/<kind>`), so every kind addresses a distinct directory; on Linux the option has no effect because the bases already separate kinds, and the standard layout applies when the option is unset.
 
 #### Scenario: Every kind resolves on every supported platform
 

@@ -130,6 +130,24 @@ pub fn platform_root(
     application: &str,
     kind: DirectoryKind,
 ) -> Result<ResolvedRoot, ResolutionError> {
+    platform_root_with_classes(application, kind, false)
+}
+
+/// Platform root with optional distinct directory classes.
+///
+/// When `distinct_directory_classes` is set, the class segment is
+/// appended beneath the application directory on Windows and macOS,
+/// whose provider bases alias several classes onto one root. Linux
+/// bases already separate classes, so the flag has no effect there.
+///
+/// # Errors
+///
+/// Same as [`platform_root`].
+pub(crate) fn platform_root_with_classes(
+    application: &str,
+    kind: DirectoryKind,
+    distinct_directory_classes: bool,
+) -> Result<ResolvedRoot, ResolutionError> {
     validate_token(application)?;
     let base_dirs = BaseDirs::new();
     let snapshot = PlatformSnapshot::capture(base_dirs.as_ref());
@@ -148,8 +166,9 @@ pub fn platform_root(
         // propagate as a relative platform root.
         return Err(ResolutionError::Unavailable(kind));
     };
-    Ok(ResolvedRoot {
-        path: base.join(application),
-        provenance,
-    })
+    let mut path = base.join(application);
+    if distinct_directory_classes && cfg!(any(windows, target_os = "macos")) {
+        path = path.join(kind.segment());
+    }
+    Ok(ResolvedRoot { path, provenance })
 }

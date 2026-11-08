@@ -84,6 +84,7 @@ pub struct Resolver {
     application: String,
     development_enabled: bool,
     layout: DevelopmentLayout,
+    distinct_directory_classes: bool,
 }
 
 impl Resolver {
@@ -102,6 +103,7 @@ impl Resolver {
             application,
             development_enabled: false,
             layout: DevelopmentLayout::default(),
+            distinct_directory_classes: false,
         })
     }
 
@@ -116,6 +118,21 @@ impl Resolver {
     #[must_use]
     pub fn layout(mut self, layout: DevelopmentLayout) -> Self {
         self.layout = layout;
+        self
+    }
+
+    /// Requests distinct directory classes on aliased platforms.
+    ///
+    /// This is a deliberate per-application choice, set once on the
+    /// builder: every platform resolution from this resolver then
+    /// appends the class segment beneath the application directory
+    /// on Windows and macOS, whose provider bases alias several
+    /// classes onto one root. The default (unset) keeps the standard
+    /// platform layout, in which aliased classes share one root.
+    /// Linux bases already separate classes and are unaffected.
+    #[must_use]
+    pub fn distinct_directory_classes(mut self, enabled: bool) -> Self {
+        self.distinct_directory_classes = enabled;
         self
     }
 
@@ -165,7 +182,11 @@ impl Resolver {
                 Err(error) => return Err(error),
             }
         }
-        platform_root(&self.application, kind)
+        crate::platform::platform_root_with_classes(
+            &self.application,
+            kind,
+            self.distinct_directory_classes,
+        )
     }
 
     fn resolve_explicit(

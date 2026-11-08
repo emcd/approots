@@ -9,6 +9,7 @@
 - [x] 2.2 Add Windows tests executing the drive-relative and root-relative explicit-root refusal.
 - [x] 2.3 Add Windows discovery coverage through a junction or directory symlink (capability-probed) and a non-ASCII checkout name.
 - [x] 2.4 Update the source-export fallthrough test to expect the resolved state root now that every supported platform defines one.
+- [x] 2.5 Add the `distinct_directory_classes` builder option appending class segments on Windows/macOS, with a test asserting its platform-conditional effect and unchanged provenance.
 
 ## 3. Verification
 

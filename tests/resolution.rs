@@ -394,6 +394,33 @@ fn platform_roots_resolve_for_every_kind() {
     }
 }
 
+#[test]
+fn distinct_directory_classes_append_only_on_aliased_platforms() {
+    let plain = Resolver::new("fixture-app").expect("resolver");
+    let distinct = Resolver::new("fixture-app")
+        .expect("resolver")
+        .distinct_directory_classes(true);
+    for kind in [
+        DirectoryKind::Configuration,
+        DirectoryKind::State,
+        DirectoryKind::Cache,
+        DirectoryKind::Data,
+    ] {
+        let standard = plain
+            .resolve(kind, None, None, DevelopmentScope::Worktree, None)
+            .expect("standard root");
+        let separated = distinct
+            .resolve(kind, None, None, DevelopmentScope::Worktree, None)
+            .expect("distinct root");
+        assert_eq!(standard.provenance, separated.provenance);
+        if cfg!(any(windows, target_os = "macos")) {
+            assert_eq!(separated.path, standard.path.join(kind.segment()));
+        } else {
+            assert_eq!(separated.path, standard.path);
+        }
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_state_root_uses_local_application_data() {
