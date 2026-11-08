@@ -38,3 +38,22 @@ The library SHALL name the four directory classes `Configuration`, `State`, `Cac
 
 - **WHEN** a caller names a class for any resolution tier
 - **THEN** the same `DirectoryClass` type and segment vocabulary apply across supplied, discovered, layered, and platform resolution.
+
+### Requirement: Exact local_root composition and provenance
+
+`local_root` SHALL compose exactly `<base>/<prefix>/<class-segment>/<application>` — with the default structure, prefix `.auxiliary` and class segments `configuration`, `state`, `cache`, `data` — appending the application segment exactly once to the given base, and SHALL inherit the provenance of the `ResolvedRoot` supplied as its base rather than inventing one. Bases SHALL be raw (not already application-namespaced): a `platform_root` result is a complete root, not a `local_root` base. In `Resolver`, only the discovered and supplied tiers apply the local structure; the platform tier SHALL NOT have the structure applied to it (preserving the platform contract is a non-goal constraint on this change), and `distinct_directory_classes` SHALL affect only platform-tier results, never `local_root` compositions. Relative bases SHALL be resolved only through the stated relative-path base rules, and the application namespace guarantees (validated literal name, no cross-call uniqueness promise) SHALL apply unchanged.
+
+#### Scenario: Supplied base example
+
+- **WHEN** a caller mates the default structure onto a supplied base `/srv/inst1` for the state class of application `litrpg`
+- **THEN** the result is `/srv/inst1/.auxiliary/state/litrpg` with `SuppliedDirectory` provenance.
+
+#### Scenario: Discovered Git examples
+
+- **WHEN** the Git discoverer selects the common root `/repo` (`scope` = `Common`) for configuration, or the worktree root `/repo-wt` (`scope` = `Local`) for state
+- **THEN** the results are `/repo/.auxiliary/configuration/<application>` with `DevelopmentCommon` provenance and `/repo-wt/.auxiliary/state/<application>` with `DevelopmentWorktree` provenance respectively; a Cargo-only discovered base likewise carries `DevelopmentWorktree` as the local-anchor value of the closed provenance set.
+
+#### Scenario: Platform root is not a local_root base
+
+- **WHEN** a caller holds a `platform_root` result (already ending in the application name)
+- **THEN** that root is used as a complete root; the library never appends the application name a second time, and `Resolver` platform-tier results keep their exact platform paths and `PlatformEnvironment`/`PlatformDefault` provenance.

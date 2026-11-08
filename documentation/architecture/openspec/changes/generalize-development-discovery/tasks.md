@@ -16,3 +16,8 @@
 - [ ] 3.1 Update the full test suite for the renamed and generalized interface, keeping every previously pinned behavior (topology, scrubbing, precedence, read-only) covered.
 - [ ] 3.2 Refresh the Agentmux and LitRPG migration briefs for the new names and the discoverer model.
 - [ ] 3.3 Run nextest, clippy with warnings denied, strict OpenSpec validation, and cross-target test builds; confirm the GitHub `qa` matrix is green.
+
+## 4. Review-gap verification (added at Tier-1)
+
+- [ ] 4.1 Pin every discovery state-machine scenario in tests: registered-genera matrix, Git failure versus absence routing, Cargo missing/unreadable/malformed/virtual outcomes at a selected base, standalone search bounds and no-marker absence, argument validation before any discovery work, and scope-omitted defaulting to Local.
+- [ ] 4.2 Pin exact `local_root` compositions and closed provenance values for supplied, Git Common/Local, Cargo-only, and platform-derived bases, including the never-double-append rule for application-namespaced roots.

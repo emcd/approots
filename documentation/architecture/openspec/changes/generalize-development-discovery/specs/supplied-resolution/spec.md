@@ -2,7 +2,7 @@
 
 ### Requirement: Local structure on supplied bases
 
-The library SHALL provide `local_root`, mating a `LocalStructure` onto an explicitly supplied base and returning `SuppliedDirectory`-family provenance for the base, so supplied bases receive the same structured layout as discovered bases.
+The library SHALL provide `local_root`, mating a `LocalStructure` onto an explicitly supplied base `ResolvedRoot` and inheriting that base's provenance exactly (for a raw supplied base, `SuppliedDirectory`), so supplied bases receive the same structured layout as discovered bases.
 
 #### Scenario: Parallel instances on distinct supplied bases
 

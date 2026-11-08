@@ -22,6 +22,7 @@ None.
 - `development-layout`: layout and scope requirements are rewritten around `LocalStructure` mating to arbitrary bases and discoverer-supplied anchors.
 - `git-discovery`: discovery requirements are reframed as the Git discoverer's contract behind the generalized discoverer interface.
 - `supplied-resolution`: supplied bases gain structure mating via `local_root`.
+- `platform-roots`: reference migration only — the state-root requirement's `DirectoryKind` reference becomes `DirectoryClass`; no platform behavior changes.
 
 ## Impact
 
