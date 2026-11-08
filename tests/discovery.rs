@@ -548,6 +548,40 @@ fn standalone_search_refuses_dangling_marker() {
 
 #[cfg(unix)]
 #[test]
+fn standalone_search_reads_through_healthy_marker_link() {
+    use std::os::unix::fs::symlink;
+    // A readable symlink marker is validated by its target's content
+    // but selects its own containing directory as the base: the link
+    // is followed for identity, never for base location.
+    let outer = temp_dir("healthy-link");
+    fs::write(
+        outer.join("Cargo.toml"),
+        "[package]\nname = \"foreign-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("outer manifest");
+    let sibling = outer.join("sibling");
+    fs::create_dir_all(&sibling).expect("sibling dir");
+    let target = sibling.join("Cargo.toml");
+    fs::write(
+        &target,
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("target manifest");
+    let child = outer.join("child");
+    fs::create_dir_all(&child).expect("child dir");
+    symlink(&target, child.join("Cargo.toml")).expect("healthy link");
+    // The foreign outer marker must not matter: the nearest readable
+    // marker decides, and the base is the link's directory — neither
+    // the target's directory nor any ancestor.
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&child))
+        .expect("healthy link");
+    assert_eq!(resolved.path, child.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+}
+
+#[cfg(unix)]
+#[test]
 fn standalone_search_follows_physical_ancestry_through_symlink() {
     use std::os::unix::fs::symlink;
     // OUTER matches, OUTER/base/child carries a foreign marker, and
