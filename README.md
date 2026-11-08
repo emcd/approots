@@ -6,7 +6,30 @@
 [![Documentation](https://docs.rs/approots/badge.svg)](https://docs.rs/approots/)
 Directory locations for application caches, configuration, and state.
 
-> TODO: Provide project description and key features.
+`approots` is a small, caller-driven, read-only resolution library for
+repository-aware applications. It answers one question — *where should
+this application keep a given directory?* — through an explicit
+precedence chain (caller-supplied explicit root, then discovered
+development or supplied-directory root, then platform-standard root)
+and reports which tier supplied every result. The library only resolves
+candidate paths: it never creates, modifies, deletes, or locks anything
+on the filesystem.
+
+Key features:
+
+- Explicit precedence with a closed six-value provenance vocabulary, so
+  callers always know where a root came from.
+- Hardened Git checkout discovery (explicit working directory,
+  prefix-based environment scrubbing, typed failure outcomes) behind a
+  `VcsDiscovererGit` discoverer with shared-vs-local scope selection.
+- `Cargo.toml` identity validation (the sole declared exception to the
+  no-parsing rule), both at a selected checkout and as an upward
+  standalone search.
+- `LocalStructure` mates the conventional `.auxiliary` tree onto any
+  discovered or supplied base, inheriting its provenance.
+- Platform-standard roots on Linux, macOS, and Windows with honest
+  environment-vs-default provenance, plus shared name sanitization and
+  ordered closed configuration layer lists.
 
 ## Installation
 
@@ -18,7 +41,28 @@ cargo add approots
 
 ## Usage
 
-> TODO: Provide usage examples.
+```rust
+use std::path::Path;
+use approots::{
+    DevfileDiscovererCargo, DirectoryClass, Resolver, VcsDiscovererGit,
+};
+
+let resolved = Resolver::new( "myapp" )?
+    .register_vcs( VcsDiscovererGit )?
+    .register_devfile( DevfileDiscovererCargo )?
+    .resolve(
+        DirectoryClass::State,
+        None,
+        Some( Path::new( "/home/user/src/myapp" ) ),
+    )?;
+
+println!( "{} {:?}", resolved.path.display( ), resolved.provenance );
+```
+
+With no discoverers registered, resolution falls through to the
+platform tier; with an explicit root supplied, that root wins with
+`CallerProvided` provenance and no discovery runs. See the crate-level
+documentation (`cargo doc --open approots`) for the full contract.
 
 ## Additional Badges
 
