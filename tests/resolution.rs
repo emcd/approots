@@ -105,7 +105,9 @@ fn normal_clone_collapses_roots_from_nested_directory() {
     // invocation directory, never the worktree root. The returned
     // path keeps its semantic form; canonical comparison reconciles.
     assert_eq!(
-        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        strip_verbatim_prefix(
+            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
+        ),
         repo.join(".git")
     );
 }
@@ -119,7 +121,9 @@ fn linked_worktree_distinguishes_roots() {
     let checkout = discover_checkout(&linked).expect("discover linked");
     assert_eq!(
         checkout.worktree_root,
-        linked.canonicalize().expect("canonical linked")
+        strip_verbatim_prefix(
+            linked.canonicalize().expect("canonical linked")
+        )
     );
     assert_eq!(checkout.common_worktree_root, repo);
     assert_ne!(checkout.worktree_root, checkout.common_worktree_root);
@@ -421,7 +425,9 @@ fn symlinked_alias_discovers_real_checkout() {
     // The returned common dir keeps its semantic (alias) form and
     // names the real .git under canonical comparison.
     assert_eq!(
-        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        strip_verbatim_prefix(
+            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
+        ),
         repo.join(".git")
     );
     assert_eq!(checkout.common_worktree_root, repo);
@@ -571,7 +577,9 @@ fn symlink_dotdot_start_keeps_semantic_common_dir() {
     assert_eq!(checkout.worktree_root, repo);
     assert_eq!(checkout.git_common_dir, alias.join("../.git"));
     assert_eq!(
-        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        strip_verbatim_prefix(
+            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
+        ),
         repo.join(".git")
     );
 }
@@ -610,7 +618,9 @@ fn exotic_checkout_names_survive_discovery() {
     let checkout = discover_checkout(&start).expect("alias dotdot");
     assert_eq!(checkout.worktree_root, repo);
     assert_eq!(
-        fs::canonicalize(&checkout.git_common_dir).expect("canonical"),
+        strip_verbatim_prefix(
+            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
+        ),
         repo.join(".git")
     );
 }
