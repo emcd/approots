@@ -3,9 +3,11 @@
 //! A `LocalStructure` is a validated segment scheme. It is not tied to
 //! development: the same structure mates onto a discovered root, a
 //! supplied base, or a raw provider base through [`local_root`], which
-//! inherits the base's provenance exactly. Bases are a caller
-//! precondition and are never checked for shape here: a raw base that
-//! itself ends in the application name still composes literally.
+//! inherits the base's provenance exactly. Rawness (not already
+//! application-namespaced) is an unchecked caller precondition: a raw
+//! base that itself ends in the application name still composes
+//! literally. Shape is checked: empty, relative, and Windows
+//! ambient-dependent bases are typed refusals.
 
 use std::path::Path;
 

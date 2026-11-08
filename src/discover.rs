@@ -338,7 +338,20 @@ impl DevfileDiscoverer for DevfileDiscovererCargo {
                 },
                 // No marker here: keep walking upward. Permission and
                 // other IO failures are faults, never "no marker".
-                Err(error) if error.kind() == ErrorKind::NotFound => {},
+                // A dangling symlink reports NotFound on read although
+                // its entry exists: that is an unreadable marker, not
+                // absence. Only a genuinely missing entry continues.
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    match fs::symlink_metadata(&manifest_path) {
+                        Err(entry) if entry.kind() == ErrorKind::NotFound => {
+                        },
+                        _ => {
+                            return Err(ResolutionError::Unreadable(
+                                manifest_path,
+                            ));
+                        },
+                    }
+                },
                 Err(_) => {
                     return Err(ResolutionError::Unreadable(manifest_path));
                 },

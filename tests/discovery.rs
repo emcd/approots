@@ -512,6 +512,42 @@ fn standalone_search_follows_physical_ancestry_through_dotdot() {
 
 #[cfg(unix)]
 #[test]
+fn standalone_search_refuses_dangling_marker() {
+    use std::os::unix::fs::symlink;
+    // The nearest marker entry is a symlink whose target is missing:
+    // reading it reports NotFound, but the entry exists, so this is
+    // an unreadable marker — a typed fault, never a silent walk past
+    // it to the matching ancestor.
+    let outer = temp_dir("dangling");
+    fs::write(
+        outer.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("outer manifest");
+    let child = outer.join("child");
+    fs::create_dir_all(&child).expect("child dir");
+    let link = child.join("Cargo.toml");
+    symlink("missing-manifest.toml", &link).expect("dangling link");
+    assert!(matches!(
+        cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&child)
+        ),
+        Err(ResolutionError::Unreadable(_))
+    ));
+    // Removing the link leaves genuine absence: the ancestor is then
+    // selected normally.
+    fs::remove_file(&link).expect("remove link");
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&child))
+        .expect("genuine absence");
+    assert_eq!(resolved.path, outer.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+}
+
+#[cfg(unix)]
+#[test]
 fn standalone_search_follows_physical_ancestry_through_symlink() {
     use std::os::unix::fs::symlink;
     // OUTER matches, OUTER/base/child carries a foreign marker, and
