@@ -12,5 +12,5 @@
 
 ## 3. Verification
 
-- [ ] 3.1 Run nextest, clippy with warnings denied, and strict OpenSpec validation locally; compile-check tests for the Windows and macOS targets.
-- [ ] 3.2 Push and confirm the GitHub `qa` matrix is green on Linux, macOS, and Windows.
+- [x] 3.1 Run nextest, clippy with warnings denied, and strict OpenSpec validation locally; compile-check tests for the Windows and macOS targets.
+- [x] 3.2 Push and confirm the GitHub `qa` matrix is green on Linux, macOS, and Windows.
