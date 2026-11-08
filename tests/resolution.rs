@@ -5,8 +5,10 @@ mod common;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::process::Command;
 
 use approots::platform::sanitize_name;
 use approots::{
