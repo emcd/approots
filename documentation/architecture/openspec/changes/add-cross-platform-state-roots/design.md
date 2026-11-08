@@ -26,7 +26,7 @@ The `directories` provider returns no state root on Windows or macOS (`state_dir
 ## Risks / Trade-offs
 
 - [Consumers may hold paths under a previously-`Unavailable` kind on Windows/macOS] → This is the intended behavior change; it lands before any release, so no published consumer can depend on the old outcome.
-- [macOS `State` shares the Application Support base with `Configuration` and `Data`] → Matches both the provider's own layout and `platformdirs`; the application segment still separates applications, and kinds remain distinct path segments beneath it.
+- [Platform kinds may alias to one physical root] → Accepted and documented rather than engineered away: platform roots join only base + application, so on Windows `State` and `Cache` are the same root (`{FOLDERID_LocalAppData}/<app>`), and on macOS `State`, `Configuration`, and `Data` are the same root (`~/Library/Application Support/<app>`; the macOS Configuration/Data alias predates this change). The provider and `platformdirs` layouts share bases the same way. Consumers SHALL NOT treat platform roots as per-kind isolated stores — in particular, cache cleanup on Windows would remove state held at the aliased root. A consumer needing kind isolation supplies distinct explicit roots; adding kind suffixes to platform paths was considered and rejected, since it would deviate from the platform layout every other tool uses.
 
 ## Open Questions
 

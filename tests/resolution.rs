@@ -396,6 +396,28 @@ fn platform_roots_resolve_for_every_kind() {
 
 #[cfg(windows)]
 #[test]
+fn windows_state_root_uses_local_application_data() {
+    let dirs = directories::BaseDirs::new().expect("base dirs");
+    let resolved =
+        approots::platform_root("fixture-app", DirectoryKind::State)
+            .expect("state root");
+    assert_eq!(resolved.path, dirs.data_local_dir().join("fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::PlatformDefault);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_state_root_uses_application_support() {
+    let dirs = directories::BaseDirs::new().expect("base dirs");
+    let resolved =
+        approots::platform_root("fixture-app", DirectoryKind::State)
+            .expect("state root");
+    assert_eq!(resolved.path, dirs.data_dir().join("fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::PlatformDefault);
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_drive_relative_and_root_relative_roots_are_refused() {
     let resolver = Resolver::new("fixture-app").expect("resolver");
     let base = temp_dir("win-shape");
@@ -424,42 +446,46 @@ fn windows_drive_relative_and_root_relative_roots_are_refused() {
 }
 
 #[cfg(windows)]
+#[cfg(windows)]
 #[test]
-fn windows_junction_and_non_ascii_checkout_discovery() {
-    // Discovery through a junction (or directory symlink where the
-    // runner permits it) and in a non-ASCII-named checkout.
+fn windows_linked_checkout_discovers_through_alias() {
+    // A usable alias is mandatory on the verification runner: try a
+    // directory symlink, then a junction, and fail with both sets of
+    // diagnostics rather than silently skipping the alias assertions.
     let repo = git_repo("junction-target");
     let link_parent = temp_dir("junction-parent");
     let link = link_parent.join("link");
-    let linked = std::os::windows::fs::symlink_dir(&repo, &link)
-        .or_else(|_| {
-            Command::new("cmd")
-                .args([
-                    "/C",
-                    "mklink",
-                    "/J",
-                    &link.to_string_lossy(),
-                    &repo.to_string_lossy(),
-                ])
-                .output()
-                .and_then(|output| {
-                    if output.status.success() {
-                        Ok(())
-                    } else {
-                        Err(std::io::Error::last_os_error())
-                    }
-                })
-        })
-        .is_ok();
-    if linked {
-        let checkout =
-            discover_checkout(&link).expect("discover through link");
-        assert_eq!(
-            fs::canonicalize(&checkout.worktree_root).expect("canonical"),
-            fs::canonicalize(&repo).expect("canonical repo")
+    if let Err(symlink_error) = std::os::windows::fs::symlink_dir(&repo, &link)
+    {
+        let output = Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &link.to_string_lossy(),
+                &repo.to_string_lossy(),
+            ])
+            .output()
+            .expect("run mklink");
+        assert!(
+            output.status.success(),
+            "symlink failed ({symlink_error}); mklink /J failed: status={}, \
+             stdout={}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
+    let checkout = discover_checkout(&link).expect("discover through link");
+    assert_eq!(
+        fs::canonicalize(&checkout.worktree_root).expect("canonical"),
+        fs::canonicalize(&repo).expect("canonical repo")
+    );
+}
 
+#[cfg(windows)]
+#[test]
+fn windows_non_ascii_checkout_discovers() {
     let parent = temp_dir("non-ascii");
     let unicode_repo = parent.join("café-ü");
     fs::create_dir_all(&unicode_repo).expect("unicode repo");

@@ -14,6 +14,11 @@ On Windows, the library SHALL base the state root on the platform's local applic
 - **WHEN** a caller resolves the state kind on macOS with no explicit or development root eligible
 - **THEN** the library returns an absolute path beneath `~/Library/Application Support`, ending in the validated application name, with `PlatformDefault` provenance.
 
+#### Scenario: Platform kinds may share one physical root
+
+- **WHEN** a caller resolves `State` and `Cache` on Windows, or `State`, `Configuration`, and `Data` on macOS
+- **THEN** the aliased kinds return the same physical root (base + application name), and the library makes no promise of per-kind physical isolation on the platform tier; consumers needing isolation supply distinct explicit roots.
+
 #### Scenario: Every kind resolves on every supported platform
 
 - **WHEN** a caller resolves each of the four kinds on Linux, Windows, or macOS with a resolvable home/provider configuration
