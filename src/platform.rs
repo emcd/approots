@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use directories::BaseDirs;
 
 use crate::types::{
-    DirectoryKind, Provenance, ResolutionError, ResolvedRoot, validate_token,
+    DirectoryClass, Provenance, ResolutionError, ResolvedRoot, validate_token,
 };
 
 /// Sanitizes a name for filename use (lossy, not injective).
@@ -32,7 +32,7 @@ pub fn sanitize_name(name: &str) -> String {
 /// environment is never mutated around a provider call.
 #[derive(Clone, Debug)]
 struct PlatformSnapshot {
-    /// Raw XDG values per kind (Linux override inputs).
+    /// Raw XDG values per class (Linux override inputs).
     xdg: [Option<PathBuf>; 4],
     /// Captured home directory, when any.
     home: Option<PathBuf>,
@@ -58,7 +58,7 @@ impl PlatformSnapshot {
         }
     }
 
-    /// Derives the base and provenance for one kind from the snapshot.
+    /// Derives the base and provenance for one class from the snapshot.
     ///
     /// On Linux a valid absolute XDG value is the override; the
     /// default derives from the captured home, never from a provider
@@ -67,15 +67,15 @@ impl PlatformSnapshot {
     /// to the default, not overrides).
     fn base(
         &self,
-        kind: DirectoryKind,
+        class: DirectoryClass,
         provider_default: Option<PathBuf>,
     ) -> (Option<PathBuf>, Provenance) {
         if cfg!(target_os = "linux") {
-            let index = match kind {
-                DirectoryKind::Configuration => 0,
-                DirectoryKind::State => 1,
-                DirectoryKind::Cache => 2,
-                DirectoryKind::Data => 3,
+            let index = match class {
+                DirectoryClass::Configuration => 0,
+                DirectoryClass::State => 1,
+                DirectoryClass::Cache => 2,
+                DirectoryClass::Data => 3,
             };
             if let Some(candidate) = &self.xdg[index]
                 && candidate.is_absolute()
@@ -85,11 +85,11 @@ impl PlatformSnapshot {
                     Provenance::PlatformEnvironment,
                 );
             }
-            let default = self.home.as_ref().map(|home| match kind {
-                DirectoryKind::Configuration => home.join(".config"),
-                DirectoryKind::State => home.join(".local/state"),
-                DirectoryKind::Cache => home.join(".cache"),
-                DirectoryKind::Data => home.join(".local/share"),
+            let default = self.home.as_ref().map(|home| match class {
+                DirectoryClass::Configuration => home.join(".config"),
+                DirectoryClass::State => home.join(".local/state"),
+                DirectoryClass::Cache => home.join(".cache"),
+                DirectoryClass::Data => home.join(".local/share"),
             });
             return (default, Provenance::PlatformDefault);
         }
@@ -125,12 +125,12 @@ fn state_base_fallback(dirs: &BaseDirs) -> Option<PathBuf> {
 ///
 /// Returns [`ResolutionError::InvalidName`] for an invalid application
 /// name and [`ResolutionError::Unavailable`] when the platform offers
-/// no root for `kind` (including missing home configuration).
+/// no root for `class` (including missing home configuration).
 pub fn platform_root(
     application: &str,
-    kind: DirectoryKind,
+    class: DirectoryClass,
 ) -> Result<ResolvedRoot, ResolutionError> {
-    platform_root_with_classes(application, kind, false)
+    platform_root_with_classes(application, class, false)
 }
 
 /// Platform root with optional distinct directory classes.
@@ -145,30 +145,30 @@ pub fn platform_root(
 /// Same as [`platform_root`].
 pub(crate) fn platform_root_with_classes(
     application: &str,
-    kind: DirectoryKind,
+    class: DirectoryClass,
     distinct_directory_classes: bool,
 ) -> Result<ResolvedRoot, ResolutionError> {
     validate_token(application)?;
     let base_dirs = BaseDirs::new();
     let snapshot = PlatformSnapshot::capture(base_dirs.as_ref());
-    let provider_default = base_dirs.as_ref().and_then(|dirs| match kind {
-        DirectoryKind::Configuration => Some(dirs.config_dir().to_path_buf()),
-        DirectoryKind::State => dirs
+    let provider_default = base_dirs.as_ref().and_then(|dirs| match class {
+        DirectoryClass::Configuration => Some(dirs.config_dir().to_path_buf()),
+        DirectoryClass::State => dirs
             .state_dir()
             .map(|path| path.to_path_buf())
             .or_else(|| state_base_fallback(dirs)),
-        DirectoryKind::Cache => Some(dirs.cache_dir().to_path_buf()),
-        DirectoryKind::Data => Some(dirs.data_dir().to_path_buf()),
+        DirectoryClass::Cache => Some(dirs.cache_dir().to_path_buf()),
+        DirectoryClass::Data => Some(dirs.data_dir().to_path_buf()),
     });
-    let (base, provenance) = snapshot.base(kind, provider_default);
+    let (base, provenance) = snapshot.base(class, provider_default);
     let Some(base) = base.filter(|base| base.is_absolute()) else {
         // A relative captured home or provider base must never
         // propagate as a relative platform root.
-        return Err(ResolutionError::Unavailable(kind));
+        return Err(ResolutionError::Unavailable(class));
     };
     let mut path = base.join(application);
     if distinct_directory_classes && cfg!(any(windows, target_os = "macos")) {
-        path = path.join(kind.segment());
+        path = path.join(class.segment());
     }
     Ok(ResolvedRoot { path, provenance })
 }

@@ -13,7 +13,9 @@ use crate::types::{GitCheckout, ResolutionError};
 /// Relative `--git-common-dir` output resolves against `start`, the exact
 /// working directory the Git subprocess runs in. The common worktree
 /// root comes from `git worktree list`, never from assuming the common
-/// directory's parent is its owner.
+/// directory's parent is its owner. This is private machinery for the
+/// Git discoverer; registering that discoverer is the public signal
+/// that Git discovery is wanted.
 ///
 /// # Errors
 ///
@@ -22,7 +24,7 @@ use crate::types::{GitCheckout, ResolutionError};
 /// [`ResolutionError::GitFailed`] for other Git failures, and
 /// [`ResolutionError::UnsupportedTopology`] for bare repositories,
 /// submodule layouts, and other unmodelled topologies.
-pub fn discover_checkout(
+pub(crate) fn discover_checkout(
     start: &Path,
 ) -> Result<GitCheckout, ResolutionError> {
     if !start.is_absolute() {
@@ -65,53 +67,6 @@ pub fn discover_checkout(
         common_worktree_root,
         git_common_dir,
     })
-}
-
-/// Validates that a checkout carries an expected Cargo package name.
-///
-/// Only the `Cargo.toml` at the worktree root is read; the search never
-/// leaves the checkout.
-///
-/// # Errors
-///
-/// Returns [`ResolutionError::VirtualWorkspace`] when the root manifest
-/// has no `[package]` table, [`ResolutionError::IdentityMismatch`] when
-/// the name differs, and [`ResolutionError::Unreadable`] when the
-/// manifest cannot be read.
-pub fn validate_cargo_package(
-    checkout: &GitCheckout,
-    expected: &str,
-) -> Result<(), ResolutionError> {
-    let manifest_path = checkout.worktree_root.join("Cargo.toml");
-    let manifest = std::fs::read_to_string(&manifest_path)
-        .map_err(|_| ResolutionError::Unreadable(manifest_path.clone()))?;
-    // A real TOML parse (the declared exception): line scanning
-    // misreads multiline-string contents as tables and keys.
-    let Ok(table) = manifest.parse::<toml::Table>() else {
-        return Err(ResolutionError::UndeterminedPackage(manifest_path));
-    };
-    let Some(package) = table.get("package") else {
-        return Err(ResolutionError::VirtualWorkspace(manifest_path));
-    };
-    let found =
-        package
-            .get("name")
-            .and_then(toml::Value::as_str)
-            .filter(|name| {
-                !name.is_empty()
-                    && name.chars().all(|character| {
-                        character.is_alphanumeric()
-                            || matches!(character, '-' | '_' | '.')
-                    })
-            });
-    match found {
-        None => Err(ResolutionError::UndeterminedPackage(manifest_path)),
-        Some(name) if name == expected => Ok(()),
-        Some(name) => Err(ResolutionError::IdentityMismatch {
-            expected: expected.to_string(),
-            found: Some(name.to_string()),
-        }),
-    }
 }
 
 /// Returns the worktree owning the Git common directory.

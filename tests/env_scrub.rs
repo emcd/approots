@@ -2,7 +2,9 @@
 
 use std::{fs, path::PathBuf, process::Command};
 
-use approots::discover_checkout;
+use approots::{
+    DirectoryClass, Provenance, ResolutionError, Resolver, VcsDiscovererGit,
+};
 
 /// Removes the Windows verbatim prefix (`\\?\`) that canonicalization
 /// adds, since Git reports its own results without the prefix.
@@ -18,6 +20,13 @@ fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
         }
     }
     path
+}
+
+fn git_resolver() -> Resolver {
+    Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(VcsDiscovererGit)
+        .expect("register vcs")
 }
 
 #[test]
@@ -64,7 +73,8 @@ fn hostile_git_directory_does_not_divert_discovery() {
             "/nonexistent/alt-objects",
         );
     }
-    let checkout = discover_checkout(&repo);
+    let resolved =
+        git_resolver().resolve(DirectoryClass::State, None, Some(&repo));
     // SAFETY: same single-test process as above.
     unsafe {
         std::env::remove_var("GIT_DIR");
@@ -74,9 +84,9 @@ fn hostile_git_directory_does_not_divert_discovery() {
         std::env::remove_var("GIT_OBJECT_DIRECTORY");
         std::env::remove_var("GIT_ALTERNATE_OBJECT_DIRECTORIES");
     }
-    let checkout = checkout.expect("discovery survives contamination");
-    assert_eq!(checkout.worktree_root, PathBuf::from(&repo));
-    assert_eq!(checkout.git_common_dir, repo.join(".git"));
+    let resolved = resolved.expect("discovery survives contamination");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 
     // Missing Git is an explicit outcome, never a silent fallback.
     let saved_path = std::env::var_os("PATH");
@@ -84,28 +94,14 @@ fn hostile_git_directory_does_not_divert_discovery() {
     unsafe {
         std::env::set_var("PATH", "/nonexistent/empty-path");
     }
-    let missing = approots::discover_checkout(&repo);
-    assert!(matches!(
-        missing,
-        Err(approots::ResolutionError::GitUnavailable)
-    ));
+    let missing =
+        git_resolver().resolve(DirectoryClass::State, None, Some(&repo));
+    assert!(matches!(missing, Err(ResolutionError::GitUnavailable)));
 
-    // Through Resolver the missing executable surfaces identically;
-    // it never becomes a silent platform fallback.
-    let resolver = approots::Resolver::new("fixture-app")
-        .expect("resolver")
-        .development_mode(true);
-    // SAFETY: same single-test process as above.
-    unsafe {
-        std::env::set_var("PATH", "/nonexistent/empty-path");
-    }
-    let via_resolver = resolver.resolve(
-        approots::DirectoryKind::State,
-        None,
-        Some(&repo),
-        approots::DevelopmentScope::Worktree,
-        None,
-    );
+    // Through the resolver the missing executable surfaces identically;
+    // a Git failure never becomes a platform fallback.
+    let via_resolver =
+        git_resolver().resolve(DirectoryClass::State, None, Some(&repo));
     // SAFETY: same single-test process as above.
     unsafe {
         match saved_path {
@@ -113,8 +109,5 @@ fn hostile_git_directory_does_not_divert_discovery() {
             None => std::env::remove_var("PATH"),
         }
     }
-    assert!(matches!(
-        via_resolver,
-        Err(approots::ResolutionError::GitUnavailable)
-    ));
+    assert!(matches!(via_resolver, Err(ResolutionError::GitUnavailable)));
 }

@@ -1,218 +1,115 @@
 //! Behavioral tests through the public resolution contract.
 
+mod common;
+
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
-use approots::development::{DevelopmentLayout, development_root};
 use approots::platform::sanitize_name;
 use approots::{
-    DevelopmentScope, DirectoryKind, Provenance, ResolutionError, Resolver,
-    discover_checkout, supplied_root, validate_cargo_package, validate_token,
+    DirectoryClass, Provenance, ResolutionError, Resolver, VcsDiscovererGit,
+    supplied_root, validate_token,
 };
-
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn temp_dir(tag: &str) -> PathBuf {
-    let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir()
-        .join(format!("approots-{tag}-{}-{unique}", std::process::id()));
-    fs::create_dir_all(&path).expect("create temp dir");
-    strip_verbatim_prefix(path.canonicalize().expect("canonical temp dir"))
-}
-
-/// Removes the Windows verbatim prefix (`\\?\`) that canonicalization
-/// adds, since Git cannot create worktrees beneath verbatim paths and
-/// reports its own results without the prefix.
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let text = path.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-            return PathBuf::from(format!(r"\\{rest}"));
-        }
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            return PathBuf::from(rest);
-        }
-    }
-    path
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    // Blast-by-prefix: commit hooks export GIT_INDEX_FILE and friends;
-    // fixtures must not inherit any GIT_* routing variable.
-    let mut command = Command::new("git");
-    command.args(args).current_dir(dir);
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            command.env_remove(&key);
-        }
-    }
-    command.env("GIT_CONFIG_NOSYSTEM", "1");
-    let output = command.output().expect("run git");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn git_repo(tag: &str) -> PathBuf {
-    let repo = temp_dir(tag);
-    git(&repo, &["init", "-q", "-b", "master"]);
-    git(&repo, &["config", "user.email", "test@example.invalid"]);
-    git(&repo, &["config", "user.name", "Test"]);
-    fs::write(
-        repo.join("Cargo.toml"),
-        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
-    )
-    .expect("write manifest");
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-qm", "init"]);
-    repo
-}
+use common::*;
 
 #[test]
 fn supplied_resolution_uses_absolute_base_only() {
     let base = temp_dir("supplied");
-    let resolved = supplied_root(&base, DirectoryKind::Configuration)
+    let resolved = supplied_root(&base, DirectoryClass::Configuration)
         .expect("resolve supplied");
     assert_eq!(resolved.path, base.join("configuration"));
     assert_eq!(resolved.provenance, Provenance::SuppliedDirectory);
     assert!(!resolved.path.exists(), "resolution creates nothing");
     assert!(matches!(
-        supplied_root(Path::new("relative"), DirectoryKind::State),
+        supplied_root(Path::new("relative"), DirectoryClass::State),
         Err(ResolutionError::RelativeStartDirectory(_))
     ));
     assert!(matches!(
-        supplied_root(Path::new(""), DirectoryKind::State),
+        supplied_root(Path::new(""), DirectoryClass::State),
         Err(ResolutionError::EmptyPath)
     ));
 }
 
 #[test]
-fn normal_clone_collapses_roots_from_nested_directory() {
+fn normal_clone_collapses_scopes_from_nested_directory() {
     let repo = git_repo("clone");
     let nested = repo.join("a/b");
     fs::create_dir_all(&nested).expect("nested dirs");
-    let checkout = discover_checkout(&nested).expect("discover");
-    assert_eq!(checkout.worktree_root, repo);
-    assert_eq!(checkout.common_worktree_root, repo);
-    // Regression: relative --git-common-dir resolves against the
-    // invocation directory, never the worktree root. The returned
-    // path keeps its semantic form; canonical comparison reconciles.
-    assert_eq!(
-        strip_verbatim_prefix(
-            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
+    // Nested invocation resolves against the invocation directory:
+    // both scopes collapse to the same checkout base.
+    for (scope, provenance) in [
+        (
+            VcsDiscovererGit::SCOPE_LOCAL,
+            Provenance::DevelopmentWorktree,
         ),
-        repo.join(".git")
-    );
+        (
+            VcsDiscovererGit::SCOPE_COMMON,
+            Provenance::DevelopmentCommon,
+        ),
+    ] {
+        let resolved = scope_arg(git_resolver("fixture-app"), scope)
+            .resolve(DirectoryClass::State, None, Some(&nested))
+            .expect("discover nested");
+        assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
+        assert_eq!(resolved.provenance, provenance);
+    }
 }
 
 #[test]
-fn linked_worktree_distinguishes_roots() {
+fn linked_worktree_scopes_select_distinct_roots() {
     let repo = git_repo("linked-main");
     let linked = temp_dir("linked-wt").join("wt");
     let linked_arg = linked.to_string_lossy().to_string();
     git(&repo, &["worktree", "add", "-q", &linked_arg]);
-    let checkout = discover_checkout(&linked).expect("discover linked");
+    let expected_linked =
+        strip_verbatim_prefix(linked.canonicalize().expect("canonical"));
+    let local =
+        scope_arg(git_resolver("fixture-app"), VcsDiscovererGit::SCOPE_LOCAL)
+            .resolve(DirectoryClass::State, None, Some(&linked))
+            .expect("discover linked");
     assert_eq!(
-        checkout.worktree_root,
-        strip_verbatim_prefix(
-            linked.canonicalize().expect("canonical linked")
-        )
+        local.path,
+        expected_linked.join(".auxiliary/state/fixture-app")
     );
-    assert_eq!(checkout.common_worktree_root, repo);
-    assert_ne!(checkout.worktree_root, checkout.common_worktree_root);
-}
-
-#[test]
-fn identity_validation_accepts_rejects_and_bounds() {
-    let repo = git_repo("identity");
-    let checkout = discover_checkout(&repo).expect("discover");
-    validate_cargo_package(&checkout, "fixture-app").expect("match");
-    assert!(matches!(
-        validate_cargo_package(&checkout, "other-app"),
-        Err(ResolutionError::IdentityMismatch { .. })
-    ));
-    fs::write(repo.join("Cargo.toml"), "[workspace]\nmembers = []\n")
-        .expect("virtual manifest");
-    assert!(matches!(
-        validate_cargo_package(&checkout, "fixture-app"),
-        Err(ResolutionError::VirtualWorkspace(_))
-    ));
-}
-
-#[test]
-fn development_scopes_and_layout_escape_refusal() {
-    let repo = git_repo("devlayout");
-    let checkout = discover_checkout(&repo).expect("discover");
-    let layout = DevelopmentLayout::default();
-    let common = development_root(
-        &checkout,
-        DevelopmentScope::Common,
-        DirectoryKind::State,
-        "fixture-app",
-        &layout,
-    )
-    .expect("common root");
-    assert_eq!(common.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(local.provenance, Provenance::DevelopmentWorktree);
+    let common =
+        scope_arg(git_resolver("fixture-app"), VcsDiscovererGit::SCOPE_COMMON)
+            .resolve(DirectoryClass::Configuration, None, Some(&linked))
+            .expect("discover common");
+    assert_eq!(
+        common.path,
+        repo.join(".auxiliary/configuration/fixture-app")
+    );
     assert_eq!(common.provenance, Provenance::DevelopmentCommon);
-    assert!(!common.path.exists(), "resolution creates nothing");
-
-    let bad = DevelopmentLayout {
-        auxiliary: PathBuf::from("../escape"),
-        ..DevelopmentLayout::default()
-    };
-    assert!(
-        development_root(
-            &checkout,
-            DevelopmentScope::Worktree,
-            DirectoryKind::State,
-            "fixture-app",
-            &bad,
-        )
-        .is_err()
-    );
-    assert!(validate_token("a/b").is_err());
-    assert!(validate_token("..").is_err());
-    assert!(validate_token("good-name_1").is_ok());
+    assert_ne!(local.path, common.path);
 }
 
 #[test]
-fn precedence_prefers_explicit_then_platform_when_dev_disabled() {
+fn precedence_prefers_explicit_then_platform_without_discoverers() {
     let repo = git_repo("precedence");
     let explicit = temp_dir("explicit");
     let resolver = Resolver::new("fixture-app").expect("resolver");
     let resolved = resolver
-        .resolve(
-            DirectoryKind::State,
-            Some(&explicit),
-            Some(&repo),
-            DevelopmentScope::Worktree,
-            None,
-        )
+        .resolve(DirectoryClass::State, Some(&explicit), Some(&repo))
         .expect("explicit wins");
     assert_eq!(resolved.path, explicit);
     assert_eq!(resolved.provenance, Provenance::CallerProvided);
 
-    // Development disabled: no checkout adoption, platform fallback.
+    // No discoverer registered: no checkout adoption, platform fallback.
     let platform = resolver
-        .resolve(
-            DirectoryKind::Cache,
-            None,
-            Some(&repo),
-            DevelopmentScope::Worktree,
-            None,
-        )
+        .resolve(DirectoryClass::Cache, None, Some(&repo))
         .expect("platform fallback");
     assert!(matches!(
         platform.provenance,
         Provenance::PlatformEnvironment | Provenance::PlatformDefault
     ));
+    assert!(
+        !platform.path.join(".auxiliary").exists()
+            || !platform.path.starts_with(&repo)
+    );
 }
 
 #[test]
@@ -226,21 +123,27 @@ fn clone_under_modules_directory_still_discovers() {
     fs::write(repo.join("f.txt"), "x").expect("seed");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "init"]);
-    let checkout = discover_checkout(&repo).expect("discover modules");
-    assert_eq!(checkout.worktree_root, repo);
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&repo))
+        .expect("discover modules");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 }
 
 #[test]
-fn corrupt_repository_is_not_a_repository_by_git_output() {
+fn corrupt_repository_falls_through_by_git_output() {
     // Pinned decision: Git reports a corrupt HEAD identically to a
     // missing repository, so discovery classifies it NotRepository
     // (and the precedence chain falls through to the platform tier)
     // rather than re-implementing Git discovery with a .git probe.
     let repo = git_repo("corrupt");
     fs::write(repo.join(".git/HEAD"), "garbage\n").expect("corrupt");
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&repo))
+        .expect("corrupt falls through");
     assert!(matches!(
-        discover_checkout(&repo),
-        Err(ResolutionError::NotRepository(_))
+        resolved.provenance,
+        Provenance::PlatformEnvironment | Provenance::PlatformDefault
     ));
 }
 
@@ -249,7 +152,11 @@ fn bare_repository_is_typed_unsupported() {
     let bare = temp_dir("bare");
     git(&bare, &["init", "-q", "--bare", "-b", "master"]);
     assert!(matches!(
-        discover_checkout(&bare),
+        git_cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&bare)
+        ),
         Err(ResolutionError::UnsupportedTopology(_))
     ));
 }
@@ -268,9 +175,11 @@ fn separate_git_directory_uses_real_worktree() {
     fs::write(worktree.join("f.txt"), "x").expect("seed");
     git(&worktree, &["add", "."]);
     git(&worktree, &["commit", "-qm", "init"]);
-    let checkout = discover_checkout(&worktree).expect("discover");
-    assert_eq!(checkout.worktree_root, worktree);
-    assert_eq!(checkout.common_worktree_root, worktree);
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&worktree))
+        .expect("discover");
+    assert_eq!(resolved.path, worktree.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 }
 
 #[test]
@@ -281,21 +190,40 @@ fn clones_from_clones_and_nested_linked_invocation() {
     let source = repo.to_string_lossy().to_string();
     let dest = clone_path.to_string_lossy().to_string();
     git(&clone_parent, &["clone", "-q", &source, &dest]);
-    let checkout = discover_checkout(&clone_path).expect("clone");
-    assert_eq!(checkout.worktree_root, clone_path);
-    assert_eq!(checkout.common_worktree_root, clone_path);
+    for scope in [
+        VcsDiscovererGit::SCOPE_LOCAL,
+        VcsDiscovererGit::SCOPE_COMMON,
+    ] {
+        let resolved = scope_arg(git_resolver("fixture-app"), scope)
+            .resolve(DirectoryClass::State, None, Some(&clone_path))
+            .expect("clone");
+        assert_eq!(
+            resolved.path,
+            clone_path.join(".auxiliary/state/fixture-app")
+        );
+    }
 
     let linked = temp_dir("linked-nested").join("wt");
     let linked_arg = linked.to_string_lossy().to_string();
     git(&repo, &["worktree", "add", "-q", &linked_arg]);
     let nested = linked.join("deep/nest");
     fs::create_dir_all(&nested).expect("nested linked dirs");
-    let linked_checkout = discover_checkout(&nested).expect("nested");
-    assert_eq!(linked_checkout.common_worktree_root, repo);
-    assert_ne!(
-        linked_checkout.worktree_root,
-        linked_checkout.common_worktree_root
+    let local =
+        scope_arg(git_resolver("fixture-app"), VcsDiscovererGit::SCOPE_LOCAL)
+            .resolve(DirectoryClass::State, None, Some(&nested))
+            .expect("nested local");
+    let expected_linked =
+        strip_verbatim_prefix(linked.canonicalize().expect("canonical"));
+    assert_eq!(
+        local.path,
+        expected_linked.join(".auxiliary/state/fixture-app")
     );
+    let common =
+        scope_arg(git_resolver("fixture-app"), VcsDiscovererGit::SCOPE_COMMON)
+            .resolve(DirectoryClass::State, None, Some(&nested))
+            .expect("nested common");
+    assert_eq!(common.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_ne!(local.path, common.path);
 }
 
 #[test]
@@ -339,53 +267,44 @@ fn explicit_dotdot_is_preserved_and_platform_validates() {
     let resolver = Resolver::new("fixture-app").expect("resolver");
     let explicit = PathBuf::from("alias/../state");
     let resolved = resolver
-        .resolve(
-            DirectoryKind::State,
-            Some(&explicit),
-            Some(&base),
-            DevelopmentScope::Worktree,
-            None,
-        )
+        .resolve(DirectoryClass::State, Some(&explicit), Some(&base))
         .expect("explicit with dotdot");
     assert_eq!(resolved.path, base.join("alias/../state"));
     assert!(resolved.path.is_absolute());
-    assert!(approots::platform_root("a/b", DirectoryKind::State).is_err());
-    assert!(approots::platform_root("My App", DirectoryKind::Cache).is_ok());
+    assert!(approots::platform_root("a/b", DirectoryClass::State).is_err());
+    assert!(approots::platform_root("My App", DirectoryClass::Cache).is_ok());
 
-    let dev = Resolver::new("fixture-app")
-        .expect("resolver")
-        .development_mode(true);
+    // A missing start directory is a typed Git failure, not a silent
+    // platform fallback and not a missing executable.
     let missing = base.join("does-not-exist");
     assert!(matches!(
-        dev.resolve(
-            DirectoryKind::State,
+        git_resolver("fixture-app").resolve(
+            DirectoryClass::State,
             None,
             Some(&missing),
-            DevelopmentScope::Worktree,
-            None,
         ),
         Err(ResolutionError::GitFailed(_))
     ));
 }
 
 #[test]
-fn platform_roots_resolve_for_every_kind() {
-    // Every kind resolves on every supported platform: the state kind
+fn platform_roots_resolve_for_every_class() {
+    // Every class resolves on every supported platform: the state class
     // bases on local application data (Windows) or application support
     // (macOS) where the provider has no state directory.
-    for kind in [
-        DirectoryKind::Configuration,
-        DirectoryKind::State,
-        DirectoryKind::Cache,
-        DirectoryKind::Data,
+    for class in [
+        DirectoryClass::Configuration,
+        DirectoryClass::State,
+        DirectoryClass::Cache,
+        DirectoryClass::Data,
     ] {
-        let resolved = approots::platform_root("fixture-app", kind)
+        let resolved = approots::platform_root("fixture-app", class)
             .expect("platform root");
-        assert!(resolved.path.is_absolute(), "{kind:?} root not absolute");
+        assert!(resolved.path.is_absolute(), "{class:?} root not absolute");
         assert_eq!(
             resolved.path.file_name().expect("file name"),
             "fixture-app",
-            "{kind:?} root does not end in the application name"
+            "{class:?} root does not end in the application name"
         );
         assert!(matches!(
             resolved.provenance,
@@ -400,21 +319,19 @@ fn distinct_directory_classes_append_only_on_aliased_platforms() {
     let distinct = Resolver::new("fixture-app")
         .expect("resolver")
         .distinct_directory_classes(true);
-    for kind in [
-        DirectoryKind::Configuration,
-        DirectoryKind::State,
-        DirectoryKind::Cache,
-        DirectoryKind::Data,
+    for class in [
+        DirectoryClass::Configuration,
+        DirectoryClass::State,
+        DirectoryClass::Cache,
+        DirectoryClass::Data,
     ] {
-        let standard = plain
-            .resolve(kind, None, None, DevelopmentScope::Worktree, None)
-            .expect("standard root");
-        let separated = distinct
-            .resolve(kind, None, None, DevelopmentScope::Worktree, None)
-            .expect("distinct root");
+        let standard =
+            plain.resolve(class, None, None).expect("standard root");
+        let separated =
+            distinct.resolve(class, None, None).expect("distinct root");
         assert_eq!(standard.provenance, separated.provenance);
         if cfg!(any(windows, target_os = "macos")) {
-            assert_eq!(separated.path, standard.path.join(kind.segment()));
+            assert_eq!(separated.path, standard.path.join(class.segment()));
         } else {
             assert_eq!(separated.path, standard.path);
         }
@@ -426,7 +343,7 @@ fn distinct_directory_classes_append_only_on_aliased_platforms() {
 fn windows_state_root_uses_local_application_data() {
     let dirs = directories::BaseDirs::new().expect("base dirs");
     let resolved =
-        approots::platform_root("fixture-app", DirectoryKind::State)
+        approots::platform_root("fixture-app", DirectoryClass::State)
             .expect("state root");
     assert_eq!(resolved.path, dirs.data_local_dir().join("fixture-app"));
     assert_eq!(resolved.provenance, Provenance::PlatformDefault);
@@ -437,7 +354,7 @@ fn windows_state_root_uses_local_application_data() {
 fn macos_state_root_uses_application_support() {
     let dirs = directories::BaseDirs::new().expect("base dirs");
     let resolved =
-        approots::platform_root("fixture-app", DirectoryKind::State)
+        approots::platform_root("fixture-app", DirectoryClass::State)
             .expect("state root");
     assert_eq!(resolved.path, dirs.data_dir().join("fixture-app"));
     assert_eq!(resolved.provenance, Provenance::PlatformDefault);
@@ -451,28 +368,23 @@ fn windows_drive_relative_and_root_relative_roots_are_refused() {
     // Drive-relative (C:foo) consults ambient drive state.
     assert!(matches!(
         resolver.resolve(
-            DirectoryKind::State,
+            DirectoryClass::State,
             Some(Path::new("C:foo")),
             Some(&base),
-            DevelopmentScope::Worktree,
-            None,
         ),
         Err(ResolutionError::InvalidName(_))
     ));
     // Root-relative (\foo) replaces the base during a join.
     assert!(matches!(
         resolver.resolve(
-            DirectoryKind::State,
+            DirectoryClass::State,
             Some(Path::new("\\foo")),
             Some(&base),
-            DevelopmentScope::Worktree,
-            None,
         ),
         Err(ResolutionError::InvalidName(_))
     ));
 }
 
-#[cfg(windows)]
 #[cfg(windows)]
 #[test]
 fn windows_linked_checkout_discovers_through_alias() {
@@ -503,11 +415,27 @@ fn windows_linked_checkout_discovers_through_alias() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let checkout = discover_checkout(&link).expect("discover through link");
-    assert_eq!(
-        fs::canonicalize(&checkout.worktree_root).expect("canonical"),
-        fs::canonicalize(&repo).expect("canonical repo")
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&link))
+        .expect("discover through link");
+    assert!(
+        resolved.path.ends_with(".auxiliary/state/fixture-app"),
+        "unexpected structured path: {}",
+        resolved.path.display()
     );
+    let mut discovered_base = resolved.path.clone();
+    for _ in 0..3 {
+        assert!(discovered_base.pop(), "structured path has a base");
+    }
+    assert_eq!(
+        strip_verbatim_prefix(
+            fs::canonicalize(&discovered_base).expect("canonical base")
+        ),
+        strip_verbatim_prefix(
+            fs::canonicalize(&repo).expect("canonical repo")
+        )
+    );
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 }
 
 #[cfg(windows)]
@@ -517,8 +445,13 @@ fn windows_non_ascii_checkout_discovers() {
     let unicode_repo = parent.join("café-ü");
     fs::create_dir_all(&unicode_repo).expect("unicode repo");
     git(&unicode_repo, &["init", "-q", "-b", "master"]);
-    let checkout = discover_checkout(&unicode_repo).expect("discover unicode");
-    assert_eq!(checkout.worktree_root, unicode_repo);
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&unicode_repo))
+        .expect("discover unicode");
+    assert_eq!(
+        resolved.path,
+        unicode_repo.join(".auxiliary/state/fixture-app")
+    );
 }
 
 #[test]
@@ -529,30 +462,27 @@ fn multiline_decoy_manifest_does_not_spoof_identity() {
         "[package]\ndescription = \"\"\"\n[package]\nname = \"trusted\"\n\"\"\"\nname = \"foreign\"\nversion = \"0.1.0\"\n",
     )
     .expect("decoy manifest");
-    let checkout = discover_checkout(&repo).expect("discover");
     assert!(matches!(
-        validate_cargo_package(&checkout, "trusted"),
+        git_cargo_resolver("trusted").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&repo)
+        ),
         Err(ResolutionError::IdentityMismatch { .. })
     ));
-    validate_cargo_package(&checkout, "foreign").expect("real name");
+    git_cargo_resolver("foreign")
+        .resolve(DirectoryClass::State, None, Some(&repo))
+        .expect("real name");
 }
 
 #[test]
 fn source_export_falls_through_to_platform() {
     let export = temp_dir("export");
-    let resolver = Resolver::new("fixture-app")
-        .expect("resolver")
-        .development_mode(true);
+    let resolver = Resolver::new("fixture-app").expect("resolver");
     // Every supported platform defines a state root, so the platform
     // fallthrough resolves everywhere.
     let resolved = resolver
-        .resolve(
-            DirectoryKind::State,
-            None,
-            Some(&export),
-            DevelopmentScope::Worktree,
-            None,
-        )
+        .resolve(DirectoryClass::State, None, Some(&export))
         .expect("platform fallback for source export");
     assert!(matches!(
         resolved.provenance,
@@ -575,17 +505,11 @@ fn symlinked_alias_discovers_real_checkout() {
     let repo = git_repo("alias-repo");
     let alias = temp_dir("alias-parent").join("alias");
     std::os::unix::fs::symlink(&repo, &alias).expect("alias link");
-    let checkout = discover_checkout(&alias).expect("discover alias");
-    assert_eq!(checkout.worktree_root, repo);
-    // The returned common dir keeps its semantic (alias) form and
-    // names the real .git under canonical comparison.
-    assert_eq!(
-        strip_verbatim_prefix(
-            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
-        ),
-        repo.join(".git")
-    );
-    assert_eq!(checkout.common_worktree_root, repo);
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&alias))
+        .expect("discover alias");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 }
 
 // Windows filesystems strip trailing spaces from names; Unix keeps them.
@@ -601,8 +525,10 @@ fn trailing_space_checkout_name_is_preserved() {
     fs::write(repo.join("f.txt"), "x").expect("seed");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "init"]);
-    let checkout = discover_checkout(&repo).expect("discover spaced");
-    assert_eq!(checkout.worktree_root, repo);
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&repo))
+        .expect("discover spaced");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
 }
 
 #[cfg(target_os = "linux")]
@@ -611,14 +537,14 @@ fn xdg_provenance_comes_from_one_snapshot() {
     // Child mode: run the assertions under the spawned environment.
     if std::env::var("APPROOTS_XDG_CHILD").as_deref() == Ok("unavailable") {
         assert!(matches!(
-            approots::platform_root("fixture-app", DirectoryKind::Cache),
+            approots::platform_root("fixture-app", DirectoryClass::Cache),
             Err(ResolutionError::Unavailable(_))
         ));
         return;
     }
     if std::env::var_os("APPROOTS_XDG_CHILD").is_some() {
         let resolved =
-            approots::platform_root("fixture-app", DirectoryKind::Cache)
+            approots::platform_root("fixture-app", DirectoryClass::Cache)
                 .expect("child platform root");
         let expected_base = PathBuf::from(
             std::env::var_os("APPROOTS_EXPECT_BASE").expect("expected base"),
@@ -719,26 +645,21 @@ fn xdg_provenance_comes_from_one_snapshot() {
 
 #[cfg(unix)]
 #[test]
-fn symlink_dotdot_start_keeps_semantic_common_dir() {
+fn symlink_dotdot_start_keeps_semantic_resolution() {
     // alias -> repo/sub; starting at alias/.. names the repo root to
     // the OS but lexically pops to the alias parent, which is not a
-    // checkout at all. The returned common dir must keep the semantic
-    // alias/.. form (lexical popping would retarget it).
+    // checkout at all. Discovery must still anchor at the real repo.
     let repo = git_repo("symlink-dd");
     fs::create_dir_all(repo.join("sub")).expect("sub dir");
     let parent = temp_dir("symlink-dd-parent");
     let alias = parent.join("alias");
     std::os::unix::fs::symlink(repo.join("sub"), &alias).expect("alias");
     let start = alias.join("..");
-    let checkout = discover_checkout(&start).expect("discover");
-    assert_eq!(checkout.worktree_root, repo);
-    assert_eq!(checkout.git_common_dir, alias.join("../.git"));
-    assert_eq!(
-        strip_verbatim_prefix(
-            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
-        ),
-        repo.join(".git")
-    );
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&start))
+        .expect("discover");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
 }
 
 #[cfg(unix)]
@@ -762,8 +683,10 @@ fn exotic_checkout_names_survive_discovery() {
         let repo = parent.join(&name);
         fs::create_dir_all(&repo).expect("exotic repo");
         git(&repo, &["init", "-q", "-b", "master"]);
-        let checkout = discover_checkout(&repo).expect("discover exotic");
-        assert_eq!(checkout.worktree_root, repo);
+        let resolved = git_resolver("fixture-app")
+            .resolve(DirectoryClass::State, None, Some(&repo))
+            .expect("discover exotic");
+        assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
     }
     // A symlinked alias containing .. still names the real checkout.
     let repo = git_repo("alias-dotdot");
@@ -772,12 +695,8 @@ fn exotic_checkout_names_survive_discovery() {
     let alias = alias_parent.join("alias");
     std::os::unix::fs::symlink(&repo, &alias).expect("alias link");
     let start = alias.join("a/../");
-    let checkout = discover_checkout(&start).expect("alias dotdot");
-    assert_eq!(checkout.worktree_root, repo);
-    assert_eq!(
-        strip_verbatim_prefix(
-            fs::canonicalize(&checkout.git_common_dir).expect("canonical")
-        ),
-        repo.join(".git")
-    );
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&start))
+        .expect("alias dotdot");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
 }

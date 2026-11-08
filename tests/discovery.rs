@@ -1,0 +1,435 @@
+//! Discovery state-machine and local-structure composition tests.
+
+mod common;
+
+use std::{fs, path::PathBuf, process::Command};
+
+use approots::{
+    DevfileDiscovererCargo, DirectoryClass, DiscovererGenus, LocalStructure,
+    Provenance, ResolutionError, Resolver, VcsDiscovererGit, local_root,
+    validate_token,
+};
+use common::*;
+
+#[test]
+fn cargo_identity_accepts_matches_and_rejects_at_selected_base() {
+    let repo = git_repo("identity");
+    let resolve = |app: &str| {
+        git_cargo_resolver(app).resolve(
+            DirectoryClass::State,
+            None,
+            Some(&repo),
+        )
+    };
+    let matched = resolve("fixture-app").expect("match");
+    assert_eq!(matched.path, repo.join(".auxiliary/state/fixture-app"));
+    assert_eq!(matched.provenance, Provenance::DevelopmentWorktree);
+    assert!(matches!(
+        resolve("other-app"),
+        Err(ResolutionError::IdentityMismatch { .. })
+    ));
+    fs::write(repo.join("Cargo.toml"), "[workspace]\nmembers = []\n")
+        .expect("virtual manifest");
+    assert!(matches!(
+        resolve("fixture-app"),
+        Err(ResolutionError::VirtualWorkspace(_))
+    ));
+}
+
+#[test]
+fn cargo_expected_name_argument_overrides_application() {
+    let repo = git_repo("expected-name");
+    // The application and package names legitimately differ here.
+    let resolver = cargo_resolver("custom-app").discoverer_argument(
+        DiscovererGenus::Devfile,
+        DevfileDiscovererCargo::EXPECTED_NAME_KEY,
+        "fixture-app",
+    );
+    let resolved = resolver
+        .resolve(DirectoryClass::State, None, Some(&repo))
+        .expect("expected-name override");
+    assert_eq!(resolved.path, repo.join(".auxiliary/state/custom-app"));
+    // ...but the structure still carries the application name.
+    let mismatched = cargo_resolver("fixture-app").discoverer_argument(
+        DiscovererGenus::Devfile,
+        DevfileDiscovererCargo::EXPECTED_NAME_KEY,
+        "other-app",
+    );
+    assert!(matches!(
+        mismatched.resolve(DirectoryClass::State, None, Some(&repo)),
+        Err(ResolutionError::IdentityMismatch { .. })
+    ));
+}
+
+#[test]
+fn local_structure_mates_and_refuses_escape() {
+    let base = temp_dir("localstruct");
+    let structure = LocalStructure::default();
+    let root = local_root(
+        &approots::ResolvedRoot {
+            path: base.clone(),
+            provenance: Provenance::SuppliedDirectory,
+        },
+        DirectoryClass::State,
+        "fixture-app",
+        &structure,
+    )
+    .expect("local root");
+    assert_eq!(root.path, base.join(".auxiliary/state/fixture-app"));
+    assert_eq!(root.provenance, Provenance::SuppliedDirectory);
+    assert!(!root.path.exists(), "resolution creates nothing");
+
+    let bad = LocalStructure {
+        auxiliary: PathBuf::from("../escape"),
+        ..LocalStructure::default()
+    };
+    let base_root = approots::ResolvedRoot {
+        path: base.clone(),
+        provenance: Provenance::CallerProvided,
+    };
+    assert!(
+        local_root(&base_root, DirectoryClass::State, "fixture-app", &bad)
+            .is_err()
+    );
+    // Provenance is inherited, never invented.
+    let caller = local_root(
+        &approots::ResolvedRoot {
+            path: base.clone(),
+            provenance: Provenance::CallerProvided,
+        },
+        DirectoryClass::Cache,
+        "fixture-app",
+        &structure,
+    )
+    .expect("caller base");
+    assert_eq!(caller.provenance, Provenance::CallerProvided);
+    assert!(validate_token("a/b").is_err());
+    assert!(validate_token("..").is_err());
+    assert!(validate_token("good-name_1").is_ok());
+}
+
+#[test]
+fn git_absence_skips_standalone_cargo_search() {
+    // A plain directory with a matching Cargo.toml but no .git: the
+    // registered Git discoverer reports genuine absence, so the
+    // discovered tier is absent and the standalone Cargo search does
+    // NOT run — the platform tier answers.
+    let plain = temp_dir("no-repo");
+    fs::write(
+        plain.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    let resolved = git_cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&plain))
+        .expect("absence falls through");
+    assert!(matches!(
+        resolved.provenance,
+        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+    ));
+    assert!(!resolved.path.join(".auxiliary").exists());
+}
+
+#[test]
+fn devfile_only_search_finds_upward_and_absent_means_fallthrough() {
+    let base = temp_dir("standalone");
+    fs::write(
+        base.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    let nested = base.join("deep/nest");
+    fs::create_dir_all(&nested).expect("nested dirs");
+    // Only the devfile discoverer is registered: the standalone
+    // upward search proposes the containing directory as the base.
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&nested))
+        .expect("standalone search");
+    assert_eq!(resolved.path, base.join(".auxiliary/state/fixture-app"));
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    // No marker anywhere: the tier is absent, not an error.
+    let empty = temp_dir("standalone-empty");
+    let fallen = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&empty))
+        .expect("no marker falls through");
+    assert!(matches!(
+        fallen.provenance,
+        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+    ));
+}
+
+#[test]
+fn devfile_only_search_prefers_nearest_marker() {
+    let base = temp_dir("nearest");
+    fs::write(
+        base.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("base manifest");
+    let mid = base.join("mid");
+    fs::create_dir_all(&mid).expect("mid dir");
+    fs::write(
+        mid.join("Cargo.toml"),
+        "[package]\nname = \"foreign-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("mid manifest");
+    let leaf = mid.join("leaf");
+    fs::create_dir_all(&leaf).expect("leaf dir");
+    // The nearest marker wins, even when it mismatches.
+    assert!(matches!(
+        cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&leaf)
+        ),
+        Err(ResolutionError::IdentityMismatch { .. })
+    ));
+    fs::remove_file(mid.join("Cargo.toml")).expect("remove mid marker");
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&leaf))
+        .expect("base marker");
+    assert_eq!(resolved.path, base.join(".auxiliary/state/fixture-app"));
+}
+
+#[test]
+fn cargo_outcomes_at_selected_base_are_typed() {
+    // Missing marker at a selected VCS base is a typed error.
+    let repo = git_repo("cargo-missing");
+    fs::remove_file(repo.join("Cargo.toml")).expect("remove manifest");
+    assert!(matches!(
+        git_cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&repo)
+        ),
+        Err(ResolutionError::Unreadable(_))
+    ));
+    // Malformed TOML is undetermined, never a fallthrough.
+    let repo = git_repo("cargo-malformed");
+    fs::write(repo.join("Cargo.toml"), "[[[\n").expect("malformed");
+    assert!(matches!(
+        git_cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&repo)
+        ),
+        Err(ResolutionError::UndeterminedPackage(_))
+    ));
+    // Unreadable manifest is a fault, not "no marker".
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = git_repo("cargo-unreadable");
+        let manifest = repo.join("Cargo.toml");
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o000))
+            .expect("chmod manifest");
+        let outcome = git_cargo_resolver("fixture-app").resolve(
+            DirectoryClass::State,
+            None,
+            Some(&repo),
+        );
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o644))
+            .expect("restore manifest");
+        assert!(matches!(outcome, Err(ResolutionError::Unreadable(_))));
+    }
+}
+
+#[test]
+fn scope_omitted_defaults_to_local_in_linked_worktree() {
+    let repo = git_repo("scope-default");
+    let linked = temp_dir("scope-default-wt").join("wt");
+    let linked_arg = linked.to_string_lossy().to_string();
+    git(&repo, &["worktree", "add", "-q", &linked_arg]);
+    // No scope argument: behaves exactly like an explicit Local.
+    let resolved = git_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&linked))
+        .expect("default scope");
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    let expected =
+        strip_verbatim_prefix(linked.canonicalize().expect("canonical"));
+    assert_eq!(resolved.path, expected.join(".auxiliary/state/fixture-app"));
+}
+
+#[test]
+fn invalid_discoverer_arguments_are_typed_before_discovery() {
+    let base = temp_dir("bad-args");
+    let missing = base.join("does-not-exist");
+    // An invalid scope value fails as an argument error even though
+    // the start directory would separately fail discovery: argument
+    // validation precedes all discovery work.
+    let outcome = git_resolver("fixture-app")
+        .discoverer_argument(DiscovererGenus::Vcs, "scope", "bogus")
+        .resolve(DirectoryClass::State, None, Some(&missing));
+    match outcome {
+        Err(ResolutionError::InvalidDiscovererArgument {
+            discoverer,
+            key,
+            value,
+        }) => {
+            assert_eq!(discoverer, "VcsDiscovererGit");
+            assert_eq!(key, "scope");
+            assert_eq!(value, "bogus");
+        },
+        other => panic!("expected argument error, got {other:?}"),
+    }
+    // An unknown key is rejected even with a valid start.
+    let repo = git_repo("bad-key");
+    assert!(matches!(
+        git_resolver("fixture-app")
+            .discoverer_argument(DiscovererGenus::Vcs, "scoop", "local")
+            .resolve(DirectoryClass::State, None, Some(&repo)),
+        Err(ResolutionError::InvalidDiscovererArgument { .. })
+    ));
+    // An argument bag for an unregistered genus is a typed error that
+    // names the genus.
+    let outcome = Resolver::new("fixture-app")
+        .expect("resolver")
+        .discoverer_argument(DiscovererGenus::Devfile, "scope", "common")
+        .resolve(DirectoryClass::State, None, Some(&repo));
+    match outcome {
+        Err(ResolutionError::InvalidDiscovererArgument {
+            discoverer,
+            key,
+            value,
+        }) => {
+            assert_eq!(discoverer, "Devfile");
+            assert_eq!(key, "scope");
+            assert_eq!(value, "common");
+        },
+        other => panic!("expected genus error, got {other:?}"),
+    }
+}
+
+#[test]
+fn duplicate_discoverer_registration_is_refused() {
+    assert!(matches!(
+        git_resolver("fixture-app").register_vcs(VcsDiscovererGit),
+        Err(ResolutionError::DuplicateDiscoverer(DiscovererGenus::Vcs))
+    ));
+    assert!(matches!(
+        cargo_resolver("fixture-app").register_devfile(DevfileDiscovererCargo),
+        Err(ResolutionError::DuplicateDiscoverer(
+            DiscovererGenus::Devfile
+        ))
+    ));
+}
+
+#[test]
+fn explicit_root_decides_before_arguments_or_discovery() {
+    // An explicit root wins even with an invalid discoverer argument:
+    // the explicit tier decided, so no discovery (and no validation)
+    // runs at all.
+    let base = temp_dir("explicit-first");
+    let explicit = temp_dir("explicit-root");
+    let resolved = git_resolver("fixture-app")
+        .discoverer_argument(DiscovererGenus::Vcs, "scope", "bogus")
+        .resolve(DirectoryClass::State, Some(&explicit), Some(&base))
+        .expect("explicit wins");
+    assert_eq!(resolved.path, explicit);
+    assert_eq!(resolved.provenance, Provenance::CallerProvided);
+}
+
+#[test]
+fn local_root_composes_exactly_and_inherits_provenance() {
+    let structure = LocalStructure::default();
+    // Supplied base example from the contract.
+    let supplied = local_root(
+        &approots::ResolvedRoot {
+            path: PathBuf::from("/srv/inst1"),
+            provenance: Provenance::SuppliedDirectory,
+        },
+        DirectoryClass::State,
+        "litrpg",
+        &structure,
+    )
+    .expect("supplied base");
+    assert_eq!(
+        supplied.path,
+        PathBuf::from("/srv/inst1/.auxiliary/state/litrpg")
+    );
+    assert_eq!(supplied.provenance, Provenance::SuppliedDirectory);
+    // A raw base ending in the application name still composes
+    // literally: rawness is a caller precondition, not a checked shape.
+    let raw = local_root(
+        &approots::ResolvedRoot {
+            path: PathBuf::from("/repo/litrpg"),
+            provenance: Provenance::CallerProvided,
+        },
+        DirectoryClass::State,
+        "litrpg",
+        &structure,
+    )
+    .expect("raw base");
+    assert_eq!(
+        raw.path,
+        PathBuf::from("/repo/litrpg/.auxiliary/state/litrpg")
+    );
+    assert_eq!(raw.provenance, Provenance::CallerProvided);
+}
+
+#[test]
+fn platform_tier_never_applies_local_structure() {
+    // With no discoverers, a non-repository start resolves the
+    // platform root exactly once namespaced: no `.auxiliary` segment
+    // is ever applied on the platform tier.
+    let plain = temp_dir("platform-tier");
+    for class in [
+        DirectoryClass::Configuration,
+        DirectoryClass::State,
+        DirectoryClass::Cache,
+        DirectoryClass::Data,
+    ] {
+        let resolved = Resolver::new("fixture-app")
+            .expect("resolver")
+            .resolve(class, None, Some(&plain))
+            .expect("platform tier");
+        assert_eq!(
+            resolved.path.file_name().expect("file name"),
+            "fixture-app"
+        );
+        assert!(
+            !resolved
+                .path
+                .components()
+                .any(|component| component.as_os_str() == ".auxiliary")
+        );
+    }
+}
+
+#[test]
+fn discovery_ignores_process_working_directory() {
+    // Child mode: resolve a fixed start under a foreign cwd.
+    if let Ok(start) = std::env::var("APPROOTS_CWD_CHILD") {
+        let start = PathBuf::from(&start);
+        let expected =
+            PathBuf::from(std::env::var("APPROOTS_CWD_EXPECT").expect("base"));
+        let resolved = git_resolver("fixture-app")
+            .resolve(DirectoryClass::State, None, Some(&start))
+            .expect("child resolve");
+        assert_eq!(
+            resolved.path,
+            expected.join(".auxiliary/state/fixture-app")
+        );
+        return;
+    }
+    let repo = git_repo("cwd-proof");
+    let exe = std::env::current_exe().expect("test exe");
+    for cwd in [temp_dir("cwd-a"), temp_dir("cwd-b")] {
+        let output = Command::new(&exe)
+            .args([
+                "discovery_ignores_process_working_directory",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("APPROOTS_CWD_CHILD", &repo)
+            .env("APPROOTS_CWD_EXPECT", &repo)
+            .current_dir(&cwd)
+            .output()
+            .expect("spawn cwd child");
+        assert!(
+            output.status.success(),
+            "cwd child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

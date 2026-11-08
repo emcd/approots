@@ -5,9 +5,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// One conventional directory kind.
+/// One conventional directory class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DirectoryKind {
+pub enum DirectoryClass {
     /// Configuration files.
     Configuration,
     /// Mutable application state.
@@ -18,8 +18,8 @@ pub enum DirectoryKind {
     Data,
 }
 
-impl DirectoryKind {
-    /// Returns the conventional path segment for this kind.
+impl DirectoryClass {
+    /// Returns the conventional path segment for this class.
     #[must_use]
     pub fn segment(self) -> &'static str {
         match self {
@@ -31,13 +31,27 @@ impl DirectoryKind {
     }
 }
 
-/// Which checkout a development root belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DevelopmentScope {
-    /// Rooted at the common worktree, shared by linked worktrees.
-    Common,
-    /// Rooted at the current worktree.
-    Worktree,
+/// Which genus of discoverer occupies a resolver slot.
+///
+/// A resolver holds at most one discoverer per genus, so the genus
+/// unambiguously addresses per-discoverer argument routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DiscovererGenus {
+    /// Version-control discoverers (for example Git, Mercurial).
+    Vcs,
+    /// Development-marker discoverers (for example Cargo, Pyproject).
+    Devfile,
+}
+
+impl DiscovererGenus {
+    /// Returns the stable label naming this genus in diagnostics.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Vcs => "Vcs",
+            Self::Devfile => "Devfile",
+        }
+    }
 }
 
 /// Where a resolved root came from. This set is closed.
@@ -66,9 +80,10 @@ pub struct ResolvedRoot {
     pub provenance: Provenance,
 }
 
-/// Git checkout topology. The three roots are distinct on purpose.
+/// Git checkout topology. A private observation inside the Git
+/// discoverer; the public discovery output is a single selected base.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GitCheckout {
+pub(crate) struct GitCheckout {
     /// Root of the current worktree.
     pub worktree_root: PathBuf,
     /// Root of the worktree owning the Git common directory.
@@ -105,12 +120,23 @@ pub enum ResolutionError {
     VirtualWorkspace(PathBuf),
     /// A `[package]` table exists but its name is undeterminable.
     UndeterminedPackage(PathBuf),
-    /// The platform offers no root for the requested kind.
-    Unavailable(DirectoryKind),
+    /// The platform offers no root for the requested class.
+    Unavailable(DirectoryClass),
     /// A layer or manifest could not be read.
     Unreadable(PathBuf),
     /// Two candidates canonicalize to the same target.
     Ambiguous(PathBuf),
+    /// A discoverer argument was unknown, or its value invalid.
+    InvalidDiscovererArgument {
+        /// The discoverer (or genus label) that rejected the argument.
+        discoverer: String,
+        /// The offending argument key.
+        key: String,
+        /// The offending argument value.
+        value: String,
+    },
+    /// A second discoverer was registered for an occupied genus.
+    DuplicateDiscoverer(DiscovererGenus),
 }
 
 impl Display for ResolutionError {
@@ -153,9 +179,22 @@ impl Display for ResolutionError {
                 "{} has a package table with an undeterminable name",
                 path.display()
             ),
-            Self::Unavailable(kind) => {
-                write!(formatter, "no platform root for {kind:?}")
+            Self::Unavailable(class) => {
+                write!(formatter, "no platform root for {class:?}")
             },
+            Self::InvalidDiscovererArgument {
+                discoverer,
+                key,
+                value,
+            } => write!(
+                formatter,
+                "invalid argument {key:?}={value:?} for discoverer {discoverer}"
+            ),
+            Self::DuplicateDiscoverer(genus) => write!(
+                formatter,
+                "duplicate discoverer for genus {}",
+                genus.label()
+            ),
             Self::Unreadable(path) => {
                 write!(formatter, "cannot read {}", path.display())
             },
