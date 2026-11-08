@@ -15,7 +15,7 @@
 
 - [x] 3.1 Update the full test suite for the renamed and generalized interface, keeping every previously pinned behavior (topology, scrubbing, precedence, read-only) covered.
 - [x] 3.2 Refresh the Agentmux and LitRPG migration briefs for the new names and the discoverer model.
-- [ ] 3.3 Run nextest, clippy with warnings denied, strict OpenSpec validation, and cross-target test builds; confirm the GitHub `qa` matrix is green.
+- [x] 3.3 Run nextest, clippy with warnings denied, strict OpenSpec validation, and cross-target test builds; confirm the GitHub `qa` matrix is green.
 
 ## 4. Review-gap verification (added at Tier-1)
 
