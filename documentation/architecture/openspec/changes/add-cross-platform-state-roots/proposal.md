@@ -9,6 +9,7 @@ Windows and macOS are second-class in the current platform-roots implementation:
 - Add Windows/macOS platform-root availability coverage: every kind resolves to an absolute path ending in the literal validated application name, on every supported platform.
 - Add Windows discovery coverage through a directory junction or symlink (whichever the runner permits) and a non-ASCII checkout name.
 - Amend the platform-roots contract: the "no state root on some configurations" example is narrowed to genuinely unresolvable provider cases now that Windows and macOS have a defined mapping.
+- Add an additive builder option, `Resolver::distinct_directory_classes`, for consumers needing physical separation of directory classes: per-application and builder-only, it appends the class segment beneath the application directory on Windows and macOS. The default (option unset, and always for the free `platform_root` function) is the standard platform layout in which aliased classes share one root ending in the application name; the opt-in layout is `<base>/<application>/<class>` on the platform tier only, leaving explicit and development tier results, provenance, and Linux results unchanged.
 
 ## Capabilities
 
@@ -23,6 +24,7 @@ None.
 ## Impact
 
 - `src/platform.rs`: provider-default state base selection per platform.
+- `src/lib.rs`: the additive `distinct_directory_classes` builder option on `Resolver`.
 - `tests/resolution.rs`, `tests/env_scrub.rs`: cross-platform availability and Windows-specific behavior tests.
-- No API shape changes, no new dependencies, no provenance vocabulary changes. Linux behavior is unchanged.
+- No new dependencies, no provenance vocabulary changes, no breaking API changes. Linux behavior is unchanged.
 - Out of scope: Windows wide-character decoding of Git output for non-UTF8 checkout names (a distinct follow-up), filesystem mutation of any kind, and provider replacement.
