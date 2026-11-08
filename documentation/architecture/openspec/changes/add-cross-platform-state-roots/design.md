@@ -1,0 +1,33 @@
+## Context
+
+The `directories` provider returns no state root on Windows or macOS (`state_dir` is `None` on both), so `State` is the one kind that does not resolve there today; the contract blesses that as a typed `Unavailable`. The provider's other bases are complete: on Windows it is built from the Known Folder API (`FOLDERID_RoamingAppData`, `FOLDERID_LocalAppData`, profile), and on macOS from the home Library layout (`Application Support`, `Caches`, `Preferences`). The operator wants Windows and macOS to be first-class — comparable to Python's `platformdirs`, which defines every kind on every platform — before the first release.
+
+## Goals / Non-Goals
+
+**Goals:**
+
+- Every `DirectoryKind` resolves on Linux, Windows, and macOS with a stated mapping.
+- Windows-only behavior (root-shape refusal, junction/alias discovery, non-ASCII names, all-kind availability) is executed in tests on Windows, not merely compiled.
+- Keep the honest-adapter contract: provenance from captured inputs, no fabricated paths.
+
+**Non-Goals:**
+
+- Windows wide-character decoding of Git output for non-UTF8 checkout names (distinct follow-up requiring its own design).
+- New dependencies, provider replacement, or any filesystem mutation.
+- Changing Linux behavior or the provenance vocabulary.
+
+## Decisions
+
+- **State mapping:** Windows `State` bases on the provider's local application-data base (`FOLDERID_LocalAppData`); macOS `State` bases on its application-support base (`~/Library/Application Support`). These are the bases `platformdirs` uses for state on those platforms. The alternative — keeping `Unavailable` — was rejected by the operator in favor of platform parity.
+- **Build on `directories`, no new crate:** the missing piece is one base selection in our adapter, not a provider gap in the other kinds. Rolling our own Known Folder calls would duplicate the provider for no gain.
+- **Provenance stays `PlatformDefault`:** the Known Folder API and the macOS home layout are default-computing inputs; the honest-adapter requirement already distinguishes inputs-to-a-default from overrides. Nothing is relabelled.
+- **Junction coverage by capability probe:** Windows test fixtures create a directory symlink where permitted and a junction otherwise, so alias discovery is exercised on either runner configuration without a new dependency.
+
+## Risks / Trade-offs
+
+- [Consumers may hold paths under a previously-`Unavailable` kind on Windows/macOS] → This is the intended behavior change; it lands before any release, so no published consumer can depend on the old outcome.
+- [macOS `State` shares the Application Support base with `Configuration` and `Data`] → Matches both the provider's own layout and `platformdirs`; the application segment still separates applications, and kinds remain distinct path segments beneath it.
+
+## Open Questions
+
+- Windows wide-character (non-UTF8) Git output decoding remains open for a later change.
