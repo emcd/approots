@@ -21,7 +21,24 @@ fn temp_dir(tag: &str) -> PathBuf {
     let path = std::env::temp_dir()
         .join(format!("approots-{tag}-{}-{unique}", std::process::id()));
     fs::create_dir_all(&path).expect("create temp dir");
-    path.canonicalize().expect("canonical temp dir")
+    strip_verbatim_prefix(path.canonicalize().expect("canonical temp dir"))
+}
+
+/// Removes the Windows verbatim prefix (`\\?\`) that canonicalization
+/// adds, since Git cannot create worktrees beneath verbatim paths and
+/// reports its own results without the prefix.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 fn git(dir: &Path, args: &[&str]) {

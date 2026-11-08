@@ -4,12 +4,29 @@ use std::{fs, path::PathBuf, process::Command};
 
 use approots::discover_checkout;
 
+/// Removes the Windows verbatim prefix (`\\?\`) that canonicalization
+/// adds, since Git reports its own results without the prefix.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 #[test]
 fn hostile_git_directory_does_not_divert_discovery() {
     let unique = std::process::id();
     let repo = std::env::temp_dir().join(format!("approots-scrub-{unique}"));
     fs::create_dir_all(&repo).expect("repo dir");
-    let repo = repo.canonicalize().expect("canonical repo");
+    let repo =
+        strip_verbatim_prefix(repo.canonicalize().expect("canonical repo"));
     for args in [
         vec!["init", "-q", "-b", "master"],
         vec!["config", "user.email", "test@example.invalid"],
