@@ -390,19 +390,25 @@ fn source_export_falls_through_to_platform() {
     let resolver = Resolver::new("fixture-app")
         .expect("resolver")
         .development_mode(true);
-    let resolved = resolver
-        .resolve(
-            DirectoryKind::State,
-            None,
-            Some(&export),
-            DevelopmentScope::Worktree,
-            None,
-        )
-        .expect("platform fallback for source export");
-    assert!(matches!(
-        resolved.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
-    ));
+    // Outside Linux the provider offers no state root, and the honest
+    // outcome is typed Unavailable rather than a fabricated path.
+    match resolver.resolve(
+        DirectoryKind::State,
+        None,
+        Some(&export),
+        DevelopmentScope::Worktree,
+        None,
+    ) {
+        Ok(resolved) => {
+            assert!(matches!(
+                resolved.provenance,
+                Provenance::PlatformEnvironment | Provenance::PlatformDefault
+            ));
+        },
+        Err(ResolutionError::Unavailable(DirectoryKind::State))
+            if !cfg!(target_os = "linux") => {},
+        Err(error) => panic!("platform fallback for source export: {error}"),
+    }
     // Windows path shapes are refused by the token grammar everywhere.
     assert!(validate_token("a:b").is_err());
     assert!(validate_token("file:stream").is_err());
@@ -433,6 +439,8 @@ fn symlinked_alias_discovers_real_checkout() {
     assert_eq!(checkout.common_worktree_root, repo);
 }
 
+// Windows filesystems strip trailing spaces from names; Unix keeps them.
+#[cfg(unix)]
 #[test]
 fn trailing_space_checkout_name_is_preserved() {
     let parent = temp_dir("space-parent");
