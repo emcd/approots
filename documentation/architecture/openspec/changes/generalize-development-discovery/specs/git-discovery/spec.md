@@ -21,9 +21,14 @@ The library SHALL organize discoverers by a closed `DiscovererGenus` enum (initi
 
 ### Requirement: Git discoverer behind the generalized interface
 
-The library SHALL provide `VcsDiscovererGit`, implementing the existing hardened Git discovery contract (explicit working directory, prefix environment scrubbing, typed failure outcomes, identity validation) behind the discoverer interface, projecting its topology onto a generic discovered base: a primary root plus an optional shared root. The direct Git entry point SHALL be named `find_checkout` and SHALL keep returning the full `GitCheckout` topology for callers who want Git explicitly.
+The library SHALL provide `VcsDiscovererGit`, implementing the existing hardened Git discovery contract (explicit working directory, prefix environment scrubbing, typed failure outcomes, identity validation) behind the discoverer interface, returning a single discovered base per discovery. There SHALL be no direct Git entry point beside the discoverer: registering `VcsDiscovererGit` is the caller's signal that Git discovery is wanted. A devfile discoverer SHALL act as both discoverer and validator: given a VCS base it validates that its marker files are present at that base and that the project identity inside matches the application name supplied through the discovery context (or an explicit expected-name argument); without a VCS base it searches upward from the start directory for its marker and proposes the containing directory as the base. An identity mismatch SHALL be a typed error, never a fallthrough.
 
-#### Scenario: Git discoverer yields a generic base
+#### Scenario: Git discoverer yields a single base
 
 - **WHEN** the Git discoverer runs inside a linked worktree with its `scope` option set to `Common`
-- **THEN** the discovered base's shared root is the common worktree root, and development resolution anchors there without the core interface naming Git topology.
+- **THEN** the discovery returns the common worktree root as the single base, and development resolution anchors there without the core interface naming Git topology.
+
+#### Scenario: Devfile discoverer validates identity at a VCS base
+
+- **WHEN** the Cargo devfile discoverer is given a VCS base whose `Cargo.toml` names a different package than the application name in the discovery context
+- **THEN** the library returns a typed identity-mismatch error and does not fall through to another base.

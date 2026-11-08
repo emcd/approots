@@ -7,8 +7,8 @@
 ## 2. Discoverer model
 
 - [ ] 2.1 Add the discoverer trait, `DiscovererGenus` slots with one-per-genus registration refusal, and per-genus string arguments with typed unknown-key/value errors.
-- [ ] 2.2 Implement `VcsDiscovererGit` over the existing hardened discovery, including its typed `scope` option (`Common`/`Local`), and rename `discover_checkout` to `find_checkout`.
-- [ ] 2.3 Implement `DevfileDiscovererCargo` for marker identity validation within the discoverer model.
+- [ ] 2.2 Implement `VcsDiscovererGit` over the existing hardened discovery, including its typed `scope` option (`Common`/`Local`), and drop the direct `discover_checkout` entry point.
+- [ ] 2.3 Implement `DevfileDiscovererCargo` as both discoverer (upward marker search without a VCS base) and validator (marker presence and `[package]` identity against the discovery-context application name at a VCS base, with an optional expected-name argument overriding the application name where the two legitimately differ).
 - [ ] 2.4 Remove `DevelopmentScope` and the `development_mode` switch from the public interface; registration is the opt-in.
 
 ## 3. Verification and adoption
