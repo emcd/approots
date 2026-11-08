@@ -579,16 +579,21 @@ fn symlink_dotdot_start_keeps_semantic_common_dir() {
 #[cfg(unix)]
 #[test]
 fn exotic_checkout_names_survive_discovery() {
+    #[cfg(target_os = "linux")]
     use std::os::unix::ffi::OsStringExt;
 
     let parent = temp_dir("exotic");
-    for name in [
+    #[allow(unused_mut)]
+    let mut names = vec![
         std::ffi::OsString::from("sp ace"),
         std::ffi::OsString::from("trail "),
         std::ffi::OsString::from("new\nline"),
         std::ffi::OsString::from("carriage\r"),
-        std::ffi::OsString::from_vec(b"nonutf8-\xff".to_vec()),
-    ] {
+    ];
+    // macOS filesystems reject non-UTF8 names (EILSEQ); Linux allows them.
+    #[cfg(target_os = "linux")]
+    names.push(std::ffi::OsString::from_vec(b"nonutf8-\xff".to_vec()));
+    for name in names {
         let repo = parent.join(&name);
         fs::create_dir_all(&repo).expect("exotic repo");
         git(&repo, &["init", "-q", "-b", "master"]);
