@@ -30,6 +30,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::types::validate_root_shape;
+
 /// Resolves one class beneath an explicitly supplied directory.
 ///
 /// # Errors
@@ -52,38 +54,6 @@ pub fn supplied_root(
         path: base.join(class.segment()),
         provenance: Provenance::SuppliedDirectory,
     })
-}
-
-/// Refuses Windows drive-relative and root-relative root shapes.
-///
-/// On Windows these consult ambient drive state or replace the base
-/// during a join, so they are rejected before any join happens. On
-/// other platforms such prefixes cannot occur.
-fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
-    #[cfg(windows)]
-    {
-        use std::path::Component;
-        let mut components = path.components();
-        match components.next() {
-            // Drive-relative (C:foo) has a prefix but no root.
-            Some(Component::Prefix(_)) => {
-                if !matches!(components.next(), Some(Component::RootDir)) {
-                    return Err(ResolutionError::InvalidName(
-                        path.display().to_string(),
-                    ));
-                }
-            },
-            // Root-relative (\foo) consults the ambient drive.
-            Some(Component::RootDir) => {
-                return Err(ResolutionError::InvalidName(
-                    path.display().to_string(),
-                ));
-            },
-            _ => {},
-        }
-    }
-    let _ = path;
-    Ok(())
 }
 
 /// Caller-driven resolver bound to one application name.
@@ -268,33 +238,37 @@ impl Resolver {
     }
 
     /// Validates every argument bag before any discovery executes.
+    ///
+    /// Bags for unregistered genera are rejected first; then every
+    /// registered discoverer's effective bag is validated, including
+    /// an implicitly empty bag, so a discoverer that requires an
+    /// option refuses before its discovery ever runs.
     fn validate_arguments(&self) -> Result<(), ResolutionError> {
         for (genus, bag) in &self.arguments {
             let registered = match genus {
-                DiscovererGenus::Vcs => {
-                    self.vcs.as_ref().map(|vcs| vcs.validate_args(bag))
-                },
-                DiscovererGenus::Devfile => {
-                    self.devfile.as_ref().map(|dev| dev.validate_args(bag))
-                },
+                DiscovererGenus::Vcs => self.vcs.is_some(),
+                DiscovererGenus::Devfile => self.devfile.is_some(),
             };
-            match registered {
+            if !registered {
                 // No discoverer registered for this genus: the bag
                 // itself is the error, naming its first entry.
-                None => {
-                    let (key, value) = bag
-                        .iter()
-                        .next()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .unwrap_or_default();
-                    return Err(ResolutionError::InvalidDiscovererArgument {
-                        discoverer: genus.label().to_string(),
-                        key,
-                        value,
-                    });
-                },
-                Some(validation) => validation?,
+                let (key, value) = bag
+                    .iter()
+                    .next()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .unwrap_or_default();
+                return Err(ResolutionError::InvalidDiscovererArgument {
+                    discoverer: genus.label().to_string(),
+                    key,
+                    value,
+                });
             }
+        }
+        if let Some(vcs) = &self.vcs {
+            vcs.validate_args(&self.bag(DiscovererGenus::Vcs))?;
+        }
+        if let Some(devfile) = &self.devfile {
+            devfile.validate_args(&self.bag(DiscovererGenus::Devfile))?;
         }
         Ok(())
     }
@@ -355,8 +329,8 @@ impl Resolver {
         if explicit.as_os_str().is_empty() {
             return Err(ResolutionError::EmptyPath);
         }
-        validate_root_shape(explicit)?;
         let path: PathBuf = if explicit.is_absolute() {
+            validate_root_shape(explicit)?;
             explicit.to_path_buf()
         } else {
             let Some(start) = start else {

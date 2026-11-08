@@ -98,9 +98,14 @@ The Cargo devfile discoverer SHALL operate in exactly one of two modes per resol
 - **WHEN** a VCS base is selected and no `Cargo.toml` exists at that base while the Cargo devfile discoverer is registered
 - **THEN** the library returns a typed unreadable/missing-marker error instead of treating the base as validated or falling through.
 
+#### Scenario: Standalone search follows physical ancestry
+
+- **WHEN** the explicit start contains `..` segments or symlinked components, with markers at both a lexical ancestor and the physical ancestor
+- **THEN** the search steps upward to the filesystem parent named by `..` rather than textual component stripping, selects the marker at the physical ancestor, and returns the base in its semantic (non-canonicalized) form.
+
 ### Requirement: Discovery state machine
 
-Discovery SHALL proceed by registered genera, in this order, after argument validation. (1) Arguments for every genus SHALL be validated and deserialized before any discoverer executes: an argument bag for a genus with no registered discoverer, an unknown key, or an invalid value SHALL be a typed error at that point, and no discovery work SHALL have run. (2) With no discoverer registered, the discovered tier is absent. (3) With a VCS discoverer registered, it runs at the explicit start: a selected base proceeds to step (4); genuine absence of a repository means the discovered tier is absent and resolution falls through by precedence, and the devfile discoverer SHALL NOT then run a standalone search; executable-unavailable, command-failure, and unsupported-topology outcomes SHALL propagate as typed errors and SHALL NOT fall through to devfile search or platform roots. (4) With a base selected and a devfile discoverer registered, the devfile discoverer validates at that base only, under the Cargo identity requirement's typed outcomes. (5) With only a devfile discoverer registered, it runs its standalone upward search; a validated marker yields the base, and no marker means the discovered tier is absent. Registration of a discoverer is the only opt-in: argument bags never cause a discoverer to be treated as registered, and discoverers never execute for a resolution whose explicit-root tier already decided the result.
+Discovery SHALL proceed by registered genera, in this order, after argument validation. (1) Arguments for every genus SHALL be validated and deserialized before any discoverer executes, covering every registered discoverer's effective bag including an implicitly empty bag when the caller supplied none: an argument bag for a genus with no registered discoverer, an unknown key, or an invalid value SHALL be a typed error at that point, and no discovery work SHALL have run. (2) With no discoverer registered, the discovered tier is absent. (3) With a VCS discoverer registered, it runs at the explicit start: a selected base proceeds to step (4); genuine absence of a repository means the discovered tier is absent and resolution falls through by precedence, and the devfile discoverer SHALL NOT then run a standalone search; executable-unavailable, command-failure, and unsupported-topology outcomes SHALL propagate as typed errors and SHALL NOT fall through to devfile search or platform roots. (4) With a base selected and a devfile discoverer registered, the devfile discoverer validates at that base only, under the Cargo identity requirement's typed outcomes. (5) With only a devfile discoverer registered, it runs its standalone upward search; a validated marker yields the base, and no marker means the discovered tier is absent. Registration of a discoverer is the only opt-in: argument bags never cause a discoverer to be treated as registered, and discoverers never execute for a resolution whose explicit-root tier already decided the result.
 
 #### Scenario: No discoverer means no discovery
 
@@ -121,3 +126,8 @@ Discovery SHALL proceed by registered genera, in this order, after argument vali
 
 - **WHEN** a caller supplies an argument bag for an unregistered genus, or an invalid value for a registered discoverer, and then resolves
 - **THEN** the typed argument error returns before any subprocess, marker search, or filesystem discovery work runs.
+
+#### Scenario: Implicitly empty bags are validated
+
+- **WHEN** a registered discoverer requires an argument the caller never supplied, and a resolution runs with no bag for that genus
+- **THEN** its typed argument refusal returns before that discoverer — or any later discoverer — executes.

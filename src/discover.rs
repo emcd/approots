@@ -315,6 +315,10 @@ impl DevfileDiscoverer for DevfileDiscovererCargo {
             return Err(ResolutionError::Unreadable(start.to_path_buf()));
         }
         let mut directory = start.to_path_buf();
+        // The physical form drives ancestry decisions; the semantic
+        // form is what markers are read through and what is returned.
+        let mut physical = fs::canonicalize(&directory)
+            .map_err(|_| ResolutionError::Unreadable(directory.clone()))?;
         loop {
             let manifest_path = directory.join("Cargo.toml");
             match fs::read_to_string(&manifest_path) {
@@ -339,10 +343,31 @@ impl DevfileDiscoverer for DevfileDiscovererCargo {
                     return Err(ResolutionError::Unreadable(manifest_path));
                 },
             }
-            match directory.parent() {
-                Some(parent) => directory = parent.to_path_buf(),
-                None => return Ok(None),
+            // Step to the physical parent. A lexical pop is preferred
+            // when it provably names the same directory — keeping
+            // ordinary paths clean — and `..` is joined otherwise, so
+            // symlinked or dot-dot segments never misroute the walk.
+            // Either way the returned base keeps its semantic,
+            // non-canonicalized form.
+            let Some(physical_parent) = physical.parent() else {
+                return Ok(None);
+            };
+            let physical_parent = physical_parent.to_path_buf();
+            let lexical_parent = directory.parent().map(Path::to_path_buf);
+            let lexical_names_parent =
+                lexical_parent.as_ref().is_some_and(|lexical| {
+                    fs::canonicalize(lexical)
+                        .is_ok_and(|candidate| candidate == physical_parent)
+                });
+            match lexical_parent {
+                Some(lexical) if lexical_names_parent => {
+                    directory = lexical;
+                },
+                _ => {
+                    directory = directory.join("..");
+                },
             }
+            physical = physical_parent;
         }
     }
 

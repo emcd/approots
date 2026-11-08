@@ -139,6 +139,44 @@ pub enum ResolutionError {
     DuplicateDiscoverer(DiscovererGenus),
 }
 
+/// Refuses empty, relative, and Windows ambient-dependent root shapes.
+///
+/// Absolute, non-empty paths pass through unchanged; nothing is
+/// canonicalized or otherwise rewritten.
+pub(crate) fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
+    if path.as_os_str().is_empty() {
+        return Err(ResolutionError::EmptyPath);
+    }
+    if !path.is_absolute() {
+        return Err(ResolutionError::RelativeStartDirectory(
+            path.to_path_buf(),
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let mut components = path.components();
+        match components.next() {
+            // Drive-relative (C:foo) consults ambient drive state.
+            Some(Component::Prefix(_)) => {
+                if !matches!(components.next(), Some(Component::RootDir)) {
+                    return Err(ResolutionError::InvalidName(
+                        path.display().to_string(),
+                    ));
+                }
+            },
+            // Root-relative (\foo) replaces the base during a join.
+            Some(Component::RootDir) => {
+                return Err(ResolutionError::InvalidName(
+                    path.display().to_string(),
+                ));
+            },
+            _ => {},
+        }
+    }
+    Ok(())
+}
+
 impl Display for ResolutionError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {

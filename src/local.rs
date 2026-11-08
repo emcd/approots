@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::types::{
     DirectoryClass, ResolutionError, ResolvedRoot,
-    validate_relative_components, validate_token,
+    validate_relative_components, validate_root_shape, validate_token,
 };
 
 /// Caller-overridable local structure segments.
@@ -76,20 +76,27 @@ impl LocalStructure {
 /// The composition is exactly
 /// `<base>/<prefix>/<class-segment>/<application>`; the application
 /// segment is appended exactly once relative to the given base, even
-/// when the base itself ends in the application name. A
-/// `platform_root` result is a complete root, never a `local_root`
-/// base. Creates nothing.
+/// when the base itself ends in the application name. Bases must be
+/// absolute and non-empty, and on Windows must not use ambient
+/// drive-relative or root-relative shapes: with no explicit-start
+/// parameter, unresolved bases are typed refusals, not propagated
+/// relative roots. A `platform_root` result is a complete root, never
+/// a `local_root` base. Creates nothing. Valid bases are propagated
+/// lexically; they are never canonicalized.
 ///
 /// # Errors
 ///
-/// Returns [`ResolutionError::InvalidName`] for an invalid application
-/// name or structure segment.
+/// Returns [`ResolutionError::EmptyPath`] for an empty base,
+/// [`ResolutionError::RelativeStartDirectory`] for a relative base,
+/// [`ResolutionError::InvalidName`] for an invalid application name,
+/// structure segment, or Windows root shape.
 pub fn local_root(
     base: &ResolvedRoot,
     class: DirectoryClass,
     application: &str,
     structure: &LocalStructure,
 ) -> Result<ResolvedRoot, ResolutionError> {
+    validate_root_shape(&base.path)?;
     validate_token(application)?;
     structure.validate()?;
     let path = base

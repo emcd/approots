@@ -2,12 +2,21 @@
 
 mod common;
 
-use std::{fs, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use approots::{
-    DevfileDiscovererCargo, DirectoryClass, DiscovererGenus, LocalStructure,
-    Provenance, ResolutionError, Resolver, VcsDiscovererGit, local_root,
-    validate_token,
+    DevfileDiscovererCargo, DirectoryClass, DiscoveredBase, Discoverer,
+    DiscovererGenus, LocalStructure, Provenance, ResolutionError, Resolver,
+    VcsDiscoverer, VcsDiscovererGit, local_root, validate_token,
 };
 use common::*;
 
@@ -329,13 +338,186 @@ fn explicit_root_decides_before_arguments_or_discovery() {
     assert_eq!(resolved.provenance, Provenance::CallerProvided);
 }
 
+/// A VCS discoverer that requires `mode = strict`, counting its
+/// validations and executions so tests witness ordering.
+#[derive(Debug)]
+struct StrictVcs {
+    validations: Arc<AtomicUsize>,
+    executions: Arc<AtomicUsize>,
+}
+
+impl Discoverer for StrictVcs {
+    fn genus(&self) -> DiscovererGenus {
+        DiscovererGenus::Vcs
+    }
+}
+
+impl VcsDiscoverer for StrictVcs {
+    fn validate_args(
+        &self,
+        args: &BTreeMap<String, String>,
+    ) -> Result<(), ResolutionError> {
+        self.validations.fetch_add(1, Ordering::SeqCst);
+        match args.get("mode") {
+            Some(mode) if mode == "strict" => Ok(()),
+            _ => Err(ResolutionError::InvalidDiscovererArgument {
+                discoverer: "StrictVcs".to_string(),
+                key: "mode".to_string(),
+                value: args.get("mode").cloned().unwrap_or_default(),
+            }),
+        }
+    }
+
+    fn discover(
+        &self,
+        _start: &Path,
+        _args: &BTreeMap<String, String>,
+    ) -> Result<Option<DiscoveredBase>, ResolutionError> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    fn clone_box(&self) -> Box<dyn VcsDiscoverer> {
+        Box::new(StrictVcs {
+            validations: Arc::clone(&self.validations),
+            executions: Arc::clone(&self.executions),
+        })
+    }
+}
+
+#[test]
+fn registered_empty_bag_is_validated_before_discovery() {
+    // No caller-supplied bag: the registered discoverer's effective
+    // (empty) bag is still validated, so its typed refusal arrives
+    // before discovery ever executes.
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register");
+    let base = temp_dir("strict-empty");
+    assert!(matches!(
+        resolver.resolve(DirectoryClass::State, None, Some(&base)),
+        Err(ResolutionError::InvalidDiscovererArgument { .. })
+    ));
+    assert_eq!(validations.load(Ordering::SeqCst), 1);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn bad_devfile_arguments_prevent_prior_vcs_execution() {
+    // The VCS discoverer requires `mode = strict` but gets an
+    // implicitly empty bag, and the devfile bag is explicitly invalid.
+    // Validation runs in genus order before ANY discoverer executes:
+    // the VCS refusal surfaces first and nothing executes.
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register vcs")
+        .register_devfile(DevfileDiscovererCargo)
+        .expect("register devfile")
+        .discoverer_argument(DiscovererGenus::Devfile, "bogus", "1");
+    let base = temp_dir("bad-devfile-blocks");
+    match resolver.resolve(DirectoryClass::State, None, Some(&base)) {
+        Err(ResolutionError::InvalidDiscovererArgument {
+            discoverer, ..
+        }) => {
+            assert_eq!(discoverer, "StrictVcs");
+        },
+        other => panic!("expected argument error, got {other:?}"),
+    }
+    assert_eq!(validations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "vcs executed despite invalid arguments"
+    );
+}
+
+#[test]
+fn standalone_search_follows_physical_ancestry_through_dotdot() {
+    // Markers at OUTER (matching) and OUTER/base/child (foreign),
+    // none at OUTER/base. The start OUTER/base/child/.. physically
+    // names OUTER/base, so the search must select OUTER — lexical
+    // parent-stripping would select the descendant child marker.
+    let outer = temp_dir("dotdot");
+    fs::write(
+        outer.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("outer manifest");
+    let child = outer.join("base/child");
+    fs::create_dir_all(&child).expect("child dir");
+    fs::write(
+        child.join("Cargo.toml"),
+        "[package]\nname = \"foreign-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("child manifest");
+    let start = child.join("..");
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&start))
+        .expect("physical ancestry");
+    assert_eq!(
+        resolved.path,
+        start.join("..").join(".auxiliary/state/fixture-app"),
+        "search must select the physical ancestor, not the lexical child"
+    );
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_search_follows_physical_ancestry_through_symlink() {
+    use std::os::unix::fs::symlink;
+    // OUTER matches, OUTER/base/child carries a foreign marker, and
+    // `link` is a symlink to the child. Starting at link/.. physically
+    // names OUTER/base (no marker); lexical parent-stripping would
+    // read the foreign child marker and report a mismatch.
+    let outer = temp_dir("symlink-ancestry");
+    fs::write(
+        outer.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("outer manifest");
+    let child = outer.join("base/child");
+    fs::create_dir_all(&child).expect("child dir");
+    fs::write(
+        child.join("Cargo.toml"),
+        "[package]\nname = \"foreign-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("child manifest");
+    let link = outer.join("link");
+    symlink(&child, &link).expect("symlink");
+    let start = link.join("..");
+    let resolved = cargo_resolver("fixture-app")
+        .resolve(DirectoryClass::State, None, Some(&start))
+        .expect("physical ancestry through symlink");
+    assert_eq!(
+        resolved.path,
+        start.join("..").join(".auxiliary/state/fixture-app"),
+        "search must follow the symlink to the physical ancestor"
+    );
+    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+}
+
 #[test]
 fn local_root_composes_exactly_and_inherits_provenance() {
     let structure = LocalStructure::default();
-    // Supplied base example from the contract.
+    // Supplied base example from the contract. The base is never
+    // created: composition is pure and platform-portable.
+    let supplied_base = temp_dir("supplied-base");
     let supplied = local_root(
         &approots::ResolvedRoot {
-            path: PathBuf::from("/srv/inst1"),
+            path: supplied_base.clone(),
             provenance: Provenance::SuppliedDirectory,
         },
         DirectoryClass::State,
@@ -343,16 +525,14 @@ fn local_root_composes_exactly_and_inherits_provenance() {
         &structure,
     )
     .expect("supplied base");
-    assert_eq!(
-        supplied.path,
-        PathBuf::from("/srv/inst1/.auxiliary/state/litrpg")
-    );
+    assert_eq!(supplied.path, supplied_base.join(".auxiliary/state/litrpg"));
     assert_eq!(supplied.provenance, Provenance::SuppliedDirectory);
     // A raw base ending in the application name still composes
     // literally: rawness is a caller precondition, not a checked shape.
+    let raw_base = temp_dir("raw-base").join("litrpg");
     let raw = local_root(
         &approots::ResolvedRoot {
-            path: PathBuf::from("/repo/litrpg"),
+            path: raw_base.clone(),
             provenance: Provenance::CallerProvided,
         },
         DirectoryClass::State,
@@ -360,11 +540,62 @@ fn local_root_composes_exactly_and_inherits_provenance() {
         &structure,
     )
     .expect("raw base");
-    assert_eq!(
-        raw.path,
-        PathBuf::from("/repo/litrpg/.auxiliary/state/litrpg")
-    );
+    assert_eq!(raw.path, raw_base.join(".auxiliary/state/litrpg"));
     assert_eq!(raw.provenance, Provenance::CallerProvided);
+}
+
+#[test]
+fn local_root_refuses_unresolved_bases() {
+    let structure = LocalStructure::default();
+    let base = |path: PathBuf, provenance: Provenance| {
+        approots::ResolvedRoot { path, provenance }
+    };
+    // Empty and relative bases are typed refusals, never propagated
+    // relative roots: local_root takes no explicit start directory.
+    assert!(matches!(
+        local_root(
+            &base(PathBuf::new(), Provenance::SuppliedDirectory),
+            DirectoryClass::State,
+            "fixture-app",
+            &structure,
+        ),
+        Err(ResolutionError::EmptyPath)
+    ));
+    assert!(matches!(
+        local_root(
+            &base(
+                PathBuf::from("relative/base"),
+                Provenance::SuppliedDirectory,
+            ),
+            DirectoryClass::State,
+            "fixture-app",
+            &structure,
+        ),
+        Err(ResolutionError::RelativeStartDirectory(_))
+    ));
+    #[cfg(windows)]
+    {
+        // Windows shapes consult ambient drive state or replace the
+        // base during a join.
+        assert!(matches!(
+            local_root(
+                &base(PathBuf::from("C:foo"), Provenance::SuppliedDirectory,),
+                DirectoryClass::State,
+                "fixture-app",
+                &structure,
+            ),
+            Err(ResolutionError::InvalidName(_))
+        ));
+        assert!(matches!(
+            local_root(
+                &base(PathBuf::from("\\foo"), Provenance::SuppliedDirectory,),
+                DirectoryClass::State,
+                "fixture-app",
+                &structure,
+            ),
+            Err(ResolutionError::InvalidName(_))
+        ));
+    }
 }
 
 #[test]
