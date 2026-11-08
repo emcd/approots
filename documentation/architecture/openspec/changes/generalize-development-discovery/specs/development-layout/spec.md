@@ -41,7 +41,7 @@ The library SHALL name the four directory classes `Configuration`, `State`, `Cac
 
 ### Requirement: Exact local_root composition and provenance
 
-`local_root` SHALL compose exactly `<base>/<prefix>/<class-segment>/<application>` — with the default structure, prefix `.auxiliary` and class segments `configuration`, `state`, `cache`, `data` — appending the application segment exactly once to the given base, and SHALL inherit the provenance of the `ResolvedRoot` supplied as its base rather than inventing one. Bases SHALL be raw (not already application-namespaced): a `platform_root` result is a complete root, not a `local_root` base. In `Resolver`, only the discovered and supplied tiers apply the local structure; the platform tier SHALL NOT have the structure applied to it (preserving the platform contract is a non-goal constraint on this change), and `distinct_directory_classes` SHALL affect only platform-tier results, never `local_root` compositions. Relative bases SHALL be resolved only through the stated relative-path base rules, and the application namespace guarantees (validated literal name, no cross-call uniqueness promise) SHALL apply unchanged.
+`local_root` SHALL compose exactly `<base>/<prefix>/<class-segment>/<application>` — with the default structure, prefix `.auxiliary` and class segments `configuration`, `state`, `cache`, `data` — appending the application segment exactly once to the given base, and SHALL inherit the provenance of the `ResolvedRoot` supplied as its base rather than inventing one. Bases SHALL be raw (not already application-namespaced) as a caller precondition, and the library does not check this: `local_root` composes onto whatever base it is given, including a raw base that itself ends in the application name. A `platform_root` result is a complete root, not a `local_root` base, and `Resolver` SHALL never feed its completed platform-tier result into `local_root`. In `Resolver`, only the discovered and supplied tiers apply the local structure; the platform tier SHALL NOT have the structure applied to it (preserving the platform contract is a non-goal constraint on this change), and `distinct_directory_classes` SHALL affect only platform-tier results, never `local_root` compositions. Relative bases SHALL be resolved only through the stated relative-path base rules, and the application namespace guarantees (validated literal name, no cross-call uniqueness promise) SHALL apply unchanged.
 
 #### Scenario: Supplied base example
 
@@ -56,4 +56,9 @@ The library SHALL name the four directory classes `Configuration`, `State`, `Cac
 #### Scenario: Platform root is not a local_root base
 
 - **WHEN** a caller holds a `platform_root` result (already ending in the application name)
-- **THEN** that root is used as a complete root; the library never appends the application name a second time, and `Resolver` platform-tier results keep their exact platform paths and `PlatformEnvironment`/`PlatformDefault` provenance.
+- **THEN** that root is used as a complete root; `Resolver` never feeds its completed platform-tier result into `local_root`, and platform-tier results keep their exact platform paths and `PlatformEnvironment`/`PlatformDefault` provenance.
+
+#### Scenario: Raw base ending in the application name still composes
+
+- **WHEN** a caller mates the default structure onto a raw base `/repo/litrpg` for the state class of application `litrpg`
+- **THEN** the result is `/repo/litrpg/.auxiliary/state/litrpg`: rawness is a caller precondition the library does not check, and composition appends the application segment exactly once relative to the given base.
