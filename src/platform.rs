@@ -97,6 +97,25 @@ impl PlatformSnapshot {
     }
 }
 
+/// State base on platforms whose provider has no state directory:
+/// local application data on Windows, application support on macOS.
+/// These are the bases `platformdirs` uses for state there.
+fn state_base_fallback(dirs: &BaseDirs) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        Some(dirs.data_local_dir().to_path_buf())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Some(dirs.data_dir().to_path_buf())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = dirs;
+        None
+    }
+}
+
 /// Resolves one platform-standard root with honest provenance.
 ///
 /// The validated application name is appended literally to the
@@ -116,9 +135,10 @@ pub fn platform_root(
     let snapshot = PlatformSnapshot::capture(base_dirs.as_ref());
     let provider_default = base_dirs.as_ref().and_then(|dirs| match kind {
         DirectoryKind::Configuration => Some(dirs.config_dir().to_path_buf()),
-        DirectoryKind::State => {
-            dirs.state_dir().map(|path| path.to_path_buf())
-        },
+        DirectoryKind::State => dirs
+            .state_dir()
+            .map(|path| path.to_path_buf())
+            .or_else(|| state_base_fallback(dirs)),
         DirectoryKind::Cache => Some(dirs.cache_dir().to_path_buf()),
         DirectoryKind::Data => Some(dirs.data_dir().to_path_buf()),
     });

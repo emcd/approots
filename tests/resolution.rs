@@ -369,6 +369,106 @@ fn explicit_dotdot_is_preserved_and_platform_validates() {
 }
 
 #[test]
+fn platform_roots_resolve_for_every_kind() {
+    // Every kind resolves on every supported platform: the state kind
+    // bases on local application data (Windows) or application support
+    // (macOS) where the provider has no state directory.
+    for kind in [
+        DirectoryKind::Configuration,
+        DirectoryKind::State,
+        DirectoryKind::Cache,
+        DirectoryKind::Data,
+    ] {
+        let resolved = approots::platform_root("fixture-app", kind)
+            .expect("platform root");
+        assert!(resolved.path.is_absolute(), "{kind:?} root not absolute");
+        assert_eq!(
+            resolved.path.file_name().expect("file name"),
+            "fixture-app",
+            "{kind:?} root does not end in the application name"
+        );
+        assert!(matches!(
+            resolved.provenance,
+            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        ));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_relative_and_root_relative_roots_are_refused() {
+    let resolver = Resolver::new("fixture-app").expect("resolver");
+    let base = temp_dir("win-shape");
+    // Drive-relative (C:foo) consults ambient drive state.
+    assert!(matches!(
+        resolver.resolve(
+            DirectoryKind::State,
+            Some(Path::new("C:foo")),
+            Some(&base),
+            DevelopmentScope::Worktree,
+            None,
+        ),
+        Err(ResolutionError::InvalidName(_))
+    ));
+    // Root-relative (\foo) replaces the base during a join.
+    assert!(matches!(
+        resolver.resolve(
+            DirectoryKind::State,
+            Some(Path::new("\\foo")),
+            Some(&base),
+            DevelopmentScope::Worktree,
+            None,
+        ),
+        Err(ResolutionError::InvalidName(_))
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_junction_and_non_ascii_checkout_discovery() {
+    // Discovery through a junction (or directory symlink where the
+    // runner permits it) and in a non-ASCII-named checkout.
+    let repo = git_repo("junction-target");
+    let link_parent = temp_dir("junction-parent");
+    let link = link_parent.join("link");
+    let linked = std::os::windows::fs::symlink_dir(&repo, &link)
+        .or_else(|_| {
+            Command::new("cmd")
+                .args([
+                    "/C",
+                    "mklink",
+                    "/J",
+                    &link.to_string_lossy(),
+                    &repo.to_string_lossy(),
+                ])
+                .output()
+                .and_then(|output| {
+                    if output.status.success() {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                })
+        })
+        .is_ok();
+    if linked {
+        let checkout =
+            discover_checkout(&link).expect("discover through link");
+        assert_eq!(
+            fs::canonicalize(&checkout.worktree_root).expect("canonical"),
+            fs::canonicalize(&repo).expect("canonical repo")
+        );
+    }
+
+    let parent = temp_dir("non-ascii");
+    let unicode_repo = parent.join("café-ü");
+    fs::create_dir_all(&unicode_repo).expect("unicode repo");
+    git(&unicode_repo, &["init", "-q", "-b", "master"]);
+    let checkout = discover_checkout(&unicode_repo).expect("discover unicode");
+    assert_eq!(checkout.worktree_root, unicode_repo);
+}
+
+#[test]
 fn multiline_decoy_manifest_does_not_spoof_identity() {
     let repo = git_repo("decoy");
     fs::write(
@@ -390,25 +490,21 @@ fn source_export_falls_through_to_platform() {
     let resolver = Resolver::new("fixture-app")
         .expect("resolver")
         .development_mode(true);
-    // Outside Linux the provider offers no state root, and the honest
-    // outcome is typed Unavailable rather than a fabricated path.
-    match resolver.resolve(
-        DirectoryKind::State,
-        None,
-        Some(&export),
-        DevelopmentScope::Worktree,
-        None,
-    ) {
-        Ok(resolved) => {
-            assert!(matches!(
-                resolved.provenance,
-                Provenance::PlatformEnvironment | Provenance::PlatformDefault
-            ));
-        },
-        Err(ResolutionError::Unavailable(DirectoryKind::State))
-            if !cfg!(target_os = "linux") => {},
-        Err(error) => panic!("platform fallback for source export: {error}"),
-    }
+    // Every supported platform defines a state root, so the platform
+    // fallthrough resolves everywhere.
+    let resolved = resolver
+        .resolve(
+            DirectoryKind::State,
+            None,
+            Some(&export),
+            DevelopmentScope::Worktree,
+            None,
+        )
+        .expect("platform fallback for source export");
+    assert!(matches!(
+        resolved.provenance,
+        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+    ));
     // Windows path shapes are refused by the token grammar everywhere.
     assert!(validate_token("a:b").is_err());
     assert!(validate_token("file:stream").is_err());
