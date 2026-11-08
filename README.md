@@ -4,32 +4,32 @@
 [![Project License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://spdx.org/licenses/Apache-2.0.html)
 [![Package Version](https://img.shields.io/crates/v/approots)](https://crates.io/crates/approots/)
 [![Documentation](https://docs.rs/approots/badge.svg)](https://docs.rs/approots/)
+
 Directory locations for application caches, configuration, and state.
 
-`approots` is a small, caller-driven, read-only resolution library for
-repository-aware applications. It answers one question — *where should
-this application keep a given directory?* — through an explicit
-precedence chain (caller-supplied explicit root, then discovered
-development or supplied-directory root, then platform-standard root)
-and reports which tier supplied every result. The library only resolves
-candidate paths: it never creates, modifies, deletes, or locks anything
-on the filesystem.
+`approots` answers one question — *where should this application keep
+a given directory?* — for configuration, state, cache, and data alike.
+Your code decides what to look up; the library only answers, and every
+answer says where it came from. It never creates, modifies, deletes,
+or locks anything on the filesystem.
 
 Key features:
 
-- Explicit precedence with a closed six-value provenance vocabulary, so
-  callers always know where a root came from.
-- Hardened Git checkout discovery (explicit working directory,
-  prefix-based environment scrubbing, typed failure outcomes) behind a
-  `VcsDiscovererGit` discoverer with shared-vs-local scope selection.
-- `Cargo.toml` identity validation (the sole declared exception to the
-  no-parsing rule), both at a selected checkout and as an upward
-  standalone search.
-- `LocalStructure` mates the conventional `.auxiliary` tree onto any
-  discovered or supplied base, inheriting its provenance.
-- Platform-standard roots on Linux, macOS, and Windows with honest
-  environment-vs-default provenance, plus shared name sanitization and
-  ordered closed configuration layer lists.
+- Platform directories: standard per-OS locations on Linux, macOS,
+  and Windows, reporting whether each came from the environment or a
+  default.
+- Supplied directories: resolve under any directory you hand it, with
+  no repository or checkout required.
+- Checkout-aware development directories: finds the Git checkout even
+  through linked worktrees and nested invocations, checks the
+  `Cargo.toml` package name matches your application, and builds
+  project-local `.auxiliary` paths under the right root — shared or
+  per-worktree.
+- Layered configuration: ordered lists of configuration directories
+  where the first match wins; an unreadable entry is reported as an
+  error rather than silently skipped.
+- Explicit override: a path you supply always wins, and no discovery
+  runs when it does.
 
 ## Installation
 
