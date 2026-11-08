@@ -30,7 +30,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::types::validate_root_shape;
+use crate::types::{refuse_windows_ambient_shape, validate_root_shape};
 
 /// Resolves one class beneath an explicitly supplied directory.
 ///
@@ -329,6 +329,10 @@ impl Resolver {
         if explicit.as_os_str().is_empty() {
             return Err(ResolutionError::EmptyPath);
         }
+        // Windows ambient-dependent shapes are refused before the
+        // ordinary-relative join, in either absoluteness branch: they
+        // must never silently join against the start.
+        refuse_windows_ambient_shape(explicit)?;
         let path: PathBuf = if explicit.is_absolute() {
             validate_root_shape(explicit)?;
             explicit.to_path_buf()

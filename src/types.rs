@@ -139,19 +139,17 @@ pub enum ResolutionError {
     DuplicateDiscoverer(DiscovererGenus),
 }
 
-/// Refuses empty, relative, and Windows ambient-dependent root shapes.
+/// Refuses Windows drive-relative and root-relative shapes.
 ///
-/// Absolute, non-empty paths pass through unchanged; nothing is
-/// canonicalized or otherwise rewritten.
-pub(crate) fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
-    if path.as_os_str().is_empty() {
-        return Err(ResolutionError::EmptyPath);
-    }
-    if !path.is_absolute() {
-        return Err(ResolutionError::RelativeStartDirectory(
-            path.to_path_buf(),
-        ));
-    }
+/// These consult ambient drive state or replace the base during a
+/// join, so they are rejected before any join happens — including
+/// the explicit tier's permitted ordinary-relative join. This is a
+/// no-op on other platforms, where such spellings are ordinary
+/// relative paths. Absolute, non-empty paths pass through unchanged;
+/// nothing is canonicalized or otherwise rewritten.
+pub(crate) fn refuse_windows_ambient_shape(
+    path: &Path,
+) -> Result<(), ResolutionError> {
     #[cfg(windows)]
     {
         use std::path::Component;
@@ -173,6 +171,25 @@ pub(crate) fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
             },
             _ => {},
         }
+    }
+    let _ = path;
+    Ok(())
+}
+
+/// Refuses empty and relative root shapes.
+///
+/// Windows ambient-dependent shapes are refused first: on Windows
+/// they are not absolute, so an absoluteness check alone would
+/// misreport them as ordinary relative paths.
+pub(crate) fn validate_root_shape(path: &Path) -> Result<(), ResolutionError> {
+    if path.as_os_str().is_empty() {
+        return Err(ResolutionError::EmptyPath);
+    }
+    refuse_windows_ambient_shape(path)?;
+    if !path.is_absolute() {
+        return Err(ResolutionError::RelativeStartDirectory(
+            path.to_path_buf(),
+        ));
     }
     Ok(())
 }

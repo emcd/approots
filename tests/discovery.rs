@@ -444,6 +444,42 @@ fn bad_devfile_arguments_prevent_prior_vcs_execution() {
 }
 
 #[test]
+fn invalid_devfile_bag_blocks_validated_vcs_discovery() {
+    // The VCS bag validates cleanly but the devfile bag is invalid:
+    // the devfile refusal must surface before the validated VCS
+    // discoverer executes. A mutant that runs VCS discovery right
+    // after its own validation fails this control (1 execution vs 0).
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register vcs")
+        .register_devfile(DevfileDiscovererCargo)
+        .expect("register devfile")
+        .discoverer_argument(DiscovererGenus::Vcs, "mode", "strict")
+        .discoverer_argument(DiscovererGenus::Devfile, "bogus", "1");
+    let base = temp_dir("bad-devfile-after-valid-vcs");
+    match resolver.resolve(DirectoryClass::State, None, Some(&base)) {
+        Err(ResolutionError::InvalidDiscovererArgument {
+            discoverer, ..
+        }) => {
+            assert_eq!(discoverer, "DevfileDiscovererCargo");
+        },
+        other => panic!("expected argument error, got {other:?}"),
+    }
+    assert_eq!(validations.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "validated vcs executed before devfile validation"
+    );
+}
+
+#[test]
 fn standalone_search_follows_physical_ancestry_through_dotdot() {
     // Markers at OUTER (matching) and OUTER/base/child (foreign),
     // none at OUTER/base. The start OUTER/base/child/.. physically
