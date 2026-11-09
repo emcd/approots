@@ -745,6 +745,47 @@ fn family_gaps_without_start_fall_back_to_platform() {
 }
 
 #[test]
+fn family_registered_discoverer_never_runs_without_start() {
+    // A valid registered discoverer with all gaps and no start:
+    // discovery must not execute (zero counter) and every kind
+    // reports platform provenance. Catches an ambient-origin mutant
+    // that falls back to the process working directory.
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register vcs")
+        .discoverer_argument(DiscovererGenus::Vcs, "mode", "strict");
+    let bundle = resolver
+        .resolve_partially_explicit(&PartialRoots::default(), None)
+        .expect("platform fallback");
+    assert_eq!(
+        executions.load(Ordering::SeqCst),
+        0,
+        "discovery executed without a start directory"
+    );
+    assert!(
+        validations.load(Ordering::SeqCst) > 0,
+        "argument validation ran and passed"
+    );
+    for root in [
+        &bundle.configuration,
+        &bundle.state,
+        &bundle.cache,
+        &bundle.data,
+    ] {
+        assert!(matches!(
+            root.provenance,
+            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        ));
+    }
+}
+
+#[test]
 fn family_invalid_some_fails_before_gap_filling() {
     // Configuration is an early gap while State is an invalid late
     // `Some`: the typed refusal surfaces before any gap work runs —
