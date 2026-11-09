@@ -15,8 +15,9 @@ use std::{
 
 use approots::{
     DevfileDiscovererCargo, DirectoryClass, DiscoveredBase, Discoverer,
-    DiscovererGenus, LocalStructure, Provenance, ResolutionError, Resolver,
-    VcsDiscoverer, VcsDiscovererGit, local_root, validate_token,
+    DiscovererGenus, LocalStructure, PartialRoots, Provenance,
+    ResolutionError, Resolver, VcsDiscoverer, VcsDiscovererGit, local_root,
+    validate_token,
 };
 use common::*;
 
@@ -613,6 +614,191 @@ fn standalone_search_follows_physical_ancestry_through_symlink() {
         "search must follow the symlink to the physical ancestor"
     );
     assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+}
+
+/// Builds an all-filled family from four distinct absolute bases.
+fn filled_family(tag: &str) -> (PartialRoots, Vec<PathBuf>) {
+    let mut paths = Vec::new();
+    let mut pick = |kind: &str| {
+        let base = temp_dir(&format!("{tag}-{kind}"));
+        paths.push(base.clone());
+        Some(base)
+    };
+    let partial = PartialRoots {
+        configuration: pick("configuration"),
+        state: pick("state"),
+        cache: pick("cache"),
+        data: pick("data"),
+    };
+    (partial, paths)
+}
+
+#[test]
+fn family_all_filled_validates_without_executing() {
+    // StrictVcs requires `mode = strict` but gets no bag, and the
+    // devfile bag is invalid: all-filled bypasses argument
+    // validation, discovery, and platform entirely, so nothing
+    // executes and every root reports CallerProvided.
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register vcs")
+        .register_devfile(DevfileDiscovererCargo)
+        .expect("register devfile")
+        .discoverer_argument(DiscovererGenus::Devfile, "bogus", "1");
+    let (partial, paths) = filled_family("family-valid");
+    let base = temp_dir("family-start");
+    let bundle = resolver
+        .resolve_partially_explicit(&partial, Some(&base))
+        .expect("all filled");
+    for (root, path) in [
+        (&bundle.configuration, &paths[0]),
+        (&bundle.state, &paths[1]),
+        (&bundle.cache, &paths[2]),
+        (&bundle.data, &paths[3]),
+    ] {
+        assert_eq!(&root.path, path);
+        assert_eq!(root.provenance, Provenance::CallerProvided);
+    }
+    assert_eq!(validations.load(Ordering::SeqCst), 0);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn family_gaps_fill_through_discovery() {
+    // Only State supplied; the rest run the normal chain. With the
+    // Cargo discoverer and a fixture start, gaps resolve through the
+    // standalone upward search as DevelopmentWorktree.
+    let outer = temp_dir("family-gaps");
+    fs::write(
+        outer.join("Cargo.toml"),
+        "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("outer manifest");
+    let leaf = outer.join("nested");
+    fs::create_dir_all(&leaf).expect("leaf dir");
+    let state = temp_dir("family-state");
+    let partial = PartialRoots {
+        configuration: None,
+        state: Some(state.clone()),
+        cache: None,
+        data: None,
+    };
+    let bundle = cargo_resolver("fixture-app")
+        .resolve_partially_explicit(&partial, Some(&leaf))
+        .expect("gaps fill");
+    assert_eq!(bundle.state.path, state);
+    assert_eq!(bundle.state.provenance, Provenance::CallerProvided);
+    for (root, segment) in [
+        (&bundle.configuration, "configuration"),
+        (&bundle.cache, "cache"),
+        (&bundle.data, "data"),
+    ] {
+        assert_eq!(
+            root.path,
+            outer.join(".auxiliary").join(segment).join("fixture-app"),
+            "gap resolves through discovery"
+        );
+        assert_eq!(root.provenance, Provenance::DevelopmentWorktree);
+    }
+}
+
+#[test]
+fn family_gaps_without_start_fall_back_to_platform() {
+    // No start and no discoverers: gaps fall back to platform roots
+    // without consulting ambient state; a bad argument bag still
+    // errors instead of falling through silently.
+    let state = temp_dir("family-nostart");
+    let partial = PartialRoots {
+        configuration: None,
+        state: Some(state.clone()),
+        cache: None,
+        data: None,
+    };
+    let bundle = Resolver::new("fixture-app")
+        .expect("resolver")
+        .resolve_partially_explicit(&partial, None)
+        .expect("platform fallback");
+    assert_eq!(bundle.state.path, state);
+    for root in [&bundle.configuration, &bundle.cache, &bundle.data] {
+        assert!(matches!(
+            root.provenance,
+            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        ));
+    }
+    // A bad bag is not suppressed by the platform fallback.
+    let outcome = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_devfile(DevfileDiscovererCargo)
+        .expect("register devfile")
+        .discoverer_argument(DiscovererGenus::Devfile, "bogus", "1")
+        .resolve_partially_explicit(&partial, None);
+    assert!(matches!(
+        outcome,
+        Err(ResolutionError::InvalidDiscovererArgument { .. })
+    ));
+}
+
+#[test]
+fn family_invalid_some_fails_before_gap_filling() {
+    // Configuration is an early gap while State is an invalid late
+    // `Some`: the typed refusal surfaces before any gap work runs —
+    // no argument validation, no discovery, no executions.
+    let validations = Arc::new(AtomicUsize::new(0));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let resolver = Resolver::new("fixture-app")
+        .expect("resolver")
+        .register_vcs(StrictVcs {
+            validations: Arc::clone(&validations),
+            executions: Arc::clone(&executions),
+        })
+        .expect("register vcs")
+        .register_devfile(DevfileDiscovererCargo)
+        .expect("register devfile");
+    let base = temp_dir("family-order");
+    let partial = PartialRoots {
+        configuration: None,
+        state: Some(PathBuf::new()),
+        cache: None,
+        data: None,
+    };
+    assert!(matches!(
+        resolver.resolve_partially_explicit(&partial, Some(&base)),
+        Err(ResolutionError::EmptyPath)
+    ));
+    assert_eq!(validations.load(Ordering::SeqCst), 0);
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn family_some_roots_are_used_literally() {
+    // Base-shaped values are used exactly as given: no class or
+    // structure segments are appended to a `Some` value.
+    let raw_base = temp_dir("family-literal").join("litrpg");
+    let partial = PartialRoots {
+        configuration: Some(raw_base.clone()),
+        state: Some(raw_base.clone()),
+        cache: Some(raw_base.clone()),
+        data: Some(raw_base.clone()),
+    };
+    let bundle = Resolver::new("litrpg")
+        .expect("resolver")
+        .resolve_partially_explicit(&partial, None)
+        .expect("literal bundle");
+    for root in [
+        &bundle.configuration,
+        &bundle.state,
+        &bundle.cache,
+        &bundle.data,
+    ] {
+        assert_eq!(root.path, raw_base);
+        assert_eq!(root.provenance, Provenance::CallerProvided);
+    }
 }
 
 #[test]

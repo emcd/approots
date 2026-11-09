@@ -80,6 +80,36 @@ pub struct ResolvedRoot {
     pub provenance: Provenance,
 }
 
+/// A family of per-kind caller-supplied roots with gaps.
+///
+/// Each `Some` value is a complete directory for its class, used
+/// literally after shape validation; each `None` is a gap the library
+/// fills through the normal chain.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartialRoots {
+    /// Complete Configuration-class directory, when supplied.
+    pub configuration: Option<PathBuf>,
+    /// Complete State-class directory, when supplied.
+    pub state: Option<PathBuf>,
+    /// Complete Cache-class directory, when supplied.
+    pub cache: Option<PathBuf>,
+    /// Complete Data-class directory, when supplied.
+    pub data: Option<PathBuf>,
+}
+
+/// A fully resolved family: one root per class.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedRoots {
+    /// The resolved Configuration-class root.
+    pub configuration: ResolvedRoot,
+    /// The resolved State-class root.
+    pub state: ResolvedRoot,
+    /// The resolved Cache-class root.
+    pub cache: ResolvedRoot,
+    /// The resolved Data-class root.
+    pub data: ResolvedRoot,
+}
+
 /// Git checkout topology. A private observation inside the Git
 /// discoverer; the public discovery output is a single selected base.
 #[derive(Clone, Debug, PartialEq, Eq)]

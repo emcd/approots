@@ -21,8 +21,8 @@ pub use layers::LayeredRoots;
 pub use local::{LocalStructure, local_root};
 pub use platform::{platform_root, sanitize_name};
 pub use types::{
-    DirectoryClass, DiscovererGenus, Provenance, ResolutionError,
-    ResolvedRoot, validate_token,
+    DirectoryClass, DiscovererGenus, PartialRoots, Provenance,
+    ResolutionError, ResolvedRoot, ResolvedRoots, validate_token,
 };
 
 use std::{
@@ -235,6 +235,84 @@ impl Resolver {
             class,
             self.distinct_directory_classes,
         )
+    }
+
+    /// Resolves a whole family with per-kind complete-or-missing roots.
+    ///
+    /// Each `Some` value is a complete directory for its class,
+    /// validated exactly like the explicit tier (absolute and
+    /// non-empty; Windows ambient-dependent shapes refused; a
+    /// relative value joins against `start`, and relative with no
+    /// start is a typed error) and reported `CallerProvided`, never
+    /// composed further. Each `None` value runs the normal chain for
+    /// its class: discovery from `start` when discoverers are
+    /// registered, otherwise the platform tier — a missing start
+    /// falls back to platform and never consults the ambient working
+    /// directory. Every `Some` field is validated before any
+    /// gap-filling executes; an all-filled input validates every
+    /// field and returns the bundle, bypassing argument validation,
+    /// discovery, and platform roots entirely.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolutionError`] for invalid supplied roots, invalid
+    /// discoverer arguments, identity mismatches, unsupported
+    /// topologies, and unavailable platform roots, exactly as the
+    /// per-kind path reports them.
+    pub fn resolve_partially_explicit(
+        &self,
+        partial: &PartialRoots,
+        start: Option<&Path>,
+    ) -> Result<ResolvedRoots, ResolutionError> {
+        // Per-kind fields in fixed order; plain public fields, no
+        // accessors.
+        let fields = [
+            (
+                DirectoryClass::Configuration,
+                partial.configuration.as_ref(),
+            ),
+            (DirectoryClass::State, partial.state.as_ref()),
+            (DirectoryClass::Cache, partial.cache.as_ref()),
+            (DirectoryClass::Data, partial.data.as_ref()),
+        ];
+        // Validate every supplied root first, through the explicit
+        // tier exactly: shape, Windows ambient, relative join. No
+        // gap-filling, discovery, or argument validation runs before
+        // this loop completes.
+        let mut resolved: [Option<ResolvedRoot>; 4] = [None, None, None, None];
+        for ((_, field), slot) in fields.iter().zip(resolved.iter_mut()) {
+            if let Some(path) = field {
+                *slot = Some(self.resolve_explicit(path, start)?);
+            }
+        }
+        if resolved.iter().all(Option::is_some) {
+            // All-filled: pure validation, no argument validation,
+            // discovery, or platform involved.
+            let [configuration, state, cache, data] = resolved;
+            let bundle = ResolvedRoots {
+                configuration: configuration.expect("validated above"),
+                state: state.expect("validated above"),
+                cache: cache.expect("validated above"),
+                data: data.expect("validated above"),
+            };
+            return Ok(bundle);
+        }
+        // Gaps run the normal per-kind chain, which validates
+        // arguments, discovers, and falls back exactly as `resolve`
+        // without an explicit root does.
+        for ((class, _), slot) in fields.iter().zip(resolved.iter_mut()) {
+            if slot.is_none() {
+                *slot = Some(self.resolve(*class, None, start)?);
+            }
+        }
+        let [configuration, state, cache, data] = resolved;
+        let bundle = ResolvedRoots {
+            configuration: configuration.expect("filled above"),
+            state: state.expect("filled above"),
+            cache: cache.expect("filled above"),
+            data: data.expect("filled above"),
+        };
+        Ok(bundle)
     }
 
     /// Validates every argument bag before any discovery executes.
