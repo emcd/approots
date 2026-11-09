@@ -17,6 +17,17 @@ wins. Every answer says where it came from. The library only
 resolves candidate paths: it never creates, modifies, or deletes
 anything on the filesystem.
 
+Who is this for:
+
+- Programs that take no path arguments and need platform-standard
+  directories with the application name in the right place.
+- Programs given explicit paths, which use them directly — the
+  crate's role there is validation and provenance, not resolution.
+- Programs given an explicit root, which get the local structure
+  beneath it.
+- Programs with a development mode, which discover a checkout root
+  and build the local structure under what they find.
+
 Key features:
 
 - Platform directories: standard per-OS locations on Linux, macOS,
