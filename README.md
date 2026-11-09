@@ -9,22 +9,32 @@ Directory locations for application caches, configuration, and state.
 
 `approots` answers one question — *where should this application keep
 a given directory?* — for configuration, state, cache, and data alike.
-Your code decides what to look up; the library only answers, and every
-answer says where it came from. It never creates, modifies, deletes,
-or locks anything on the filesystem.
+In production it resolves platform-standard locations on Linux,
+macOS, and Windows; it can also take arbitrary roots you supply, or
+roots discovered from version control and development markers, with
+your own directory structures beneath them. A path you supply always
+wins. Every answer says where it came from. The library only
+resolves candidate paths: it never creates, modifies, or deletes
+anything on the filesystem.
 
 Key features:
 
 - Platform directories: standard per-OS locations on Linux, macOS,
   and Windows, reporting whether each came from the environment or a
   default.
-- Supplied directories: resolve under any directory you hand it, with
-  no repository or checkout required.
-- Checkout-aware development directories: finds the Git checkout even
-  through linked worktrees and nested invocations, checks the
-  `Cargo.toml` package name matches your application, and builds
-  project-local `.auxiliary` paths under the right root — shared or
-  per-worktree.
+- Checkout-aware development directories: hand it any directory
+  inside your project and it finds the repository root — through
+  linked worktrees and nested invocations — checks the project
+  identity, and builds the project's local directories under the
+  right root, shared or per-worktree.
+- Bring your own version control: Git support is built in, and
+  discovery is generic — Mercurial or proprietary systems implement
+  the same discoverer interface.
+- Your layout, your default: directories follow a conventional
+  layout out of the box — rooted at `.auxiliary` relative to the
+  base, whether that base is one you supplied or one a discoverer
+  found — and you can supply your own structure when the default
+  doesn't fit.
 - Layered configuration: ordered lists of configuration directories
   where the first match wins; an unreadable entry is reported as an
   error rather than silently skipped.
@@ -52,6 +62,8 @@ let resolved = Resolver::new( "myapp" )?
     .register_devfile( DevfileDiscovererCargo )?
     .resolve(
         DirectoryClass::State,
+        // No explicit root: discover from the start directory below,
+        // then fall back to platform-standard locations.
         None,
         Some( Path::new( "/home/user/src/myapp" ) ),
     )?;
@@ -59,10 +71,13 @@ let resolved = Resolver::new( "myapp" )?
 println!( "{} {:?}", resolved.path.display( ), resolved.provenance );
 ```
 
-With no discoverers registered, resolution falls through to the
-platform tier; with an explicit root supplied, that root wins with
-`CallerProvided` provenance and no discovery runs. See the crate-level
-documentation (`cargo doc --open approots`) for the full contract.
+Production use is the common case and needs no setup: with no
+discoverers registered, the same `resolve` call goes straight to
+platform-standard directories. The example above adds checkout
+discovery on top — Git and `Cargo.toml` support are included, and
+other version-control systems plug into the same interface. See the
+crate-level documentation (`cargo doc --open approots`) for the full
+contract.
 
 ## Additional Badges
 
