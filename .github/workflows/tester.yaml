@@ -12,7 +12,7 @@ jobs:
   initialize:
     uses: ./.github/workflows/core--initializer.yaml
 
-  lint:
+  gates:
     needs: [initialize]
     strategy:
       fail-fast: true
@@ -22,7 +22,7 @@ jobs:
     steps:
 
       - name: Check Out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Up Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -59,7 +59,7 @@ jobs:
     steps:
 
       - name: Check Out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Up Toolchain
         uses: dtolnay/rust-toolchain@stable
