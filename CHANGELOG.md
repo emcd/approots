@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- Family partial-explicit resolution: `PartialRoots` input and
+  per-kind `ResolvedRoot` output structs plus
+  `Resolver::resolve_partially_explicit`, validating supplied
+  complete directories per kind and filling gaps through discovery
+  or platform defaults.
+
 ## [0.1.1] - 2026-11-09
 
 ### Changed
