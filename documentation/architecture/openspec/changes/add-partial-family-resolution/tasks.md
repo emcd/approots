@@ -17,6 +17,6 @@
 
 ## 4. Review and release
 
-- [ ] 4.1 Send proposal through Tier-1 review, then Tier-2 on approval.
-- [ ] 4.2 Implement, verify gates (nextest, clippy, openspec, cross-target checks), and re-verify through both tiers.
+- [x] 4.1 Send proposal through Tier-1 review, then Tier-2 on approval.
+- [x] 4.2 Implement, verify gates (nextest, clippy, openspec, cross-target checks), and re-verify through both tiers.
 - [ ] 4.3 Release in 0.2.0.
