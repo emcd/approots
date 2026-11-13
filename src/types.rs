@@ -110,6 +110,90 @@ pub struct ResolvedRoots {
     pub data: ResolvedRoot,
 }
 
+impl ResolvedRoot {
+    /// Appends caller-supplied segments to a resolved root.
+    ///
+    /// This is a validated token-list join, not [`Path::join`]: every
+    /// segment must satisfy the token grammar (non-empty; no
+    /// separators, drive/prefix colon, NUL, or `.`/`..`), so an
+    /// absolute or otherwise non-token segment can never trigger
+    /// [`Path::join`]'s replacement semantics — it is refused instead.
+    /// Segments join left to right onto the receiver in order, and
+    /// the derived root reports the receiver's provenance unchanged.
+    /// An empty segment list returns the root unchanged.
+    ///
+    /// The receiver is never rewritten: segments append at the byte
+    /// level rather than through [`PathBuf::push`], whose documented
+    /// normalization of pre-existing `.`/`..` on Windows
+    /// verbatim-prefixed receivers would otherwise retarget
+    /// symlink-sensitive bases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolutionError::InvalidName`] naming the first
+    /// invalid segment.
+    pub fn join(
+        &self,
+        segments: &[&str],
+    ) -> Result<ResolvedRoot, ResolutionError> {
+        for segment in segments {
+            validate_token(segment)?;
+        }
+        let mut assembled = self.path.as_os_str().to_os_string();
+        for segment in segments {
+            if needs_separator(&assembled) {
+                assembled.push(if cfg!(windows) { "\\" } else { "/" });
+            }
+            assembled.push(segment);
+        }
+        Ok(ResolvedRoot {
+            path: PathBuf::from(assembled),
+            provenance: self.provenance,
+        })
+    }
+}
+
+/// Reports whether a receiver carries a Windows verbatim prefix.
+///
+/// Native check only: on Windows a verbatim prefix (for example
+/// `\\?\C:\...`) recognises backslash solely as the separator,
+/// matching `is_verbatim_sep` in the standard library's Windows
+/// path parser. Device-namespace (`\\.\`) prefixes are not verbatim
+/// and take the ordinary branch. There is intentionally no
+/// cross-host emulation: on other platforms a Windows-looking
+/// string keeps native separator semantics.
+#[cfg(windows)]
+fn receiver_is_verbatim(current: &std::ffi::OsStr) -> bool {
+    match Path::new(current).components().next() {
+        Some(Component::Prefix(prefix)) => prefix.kind().is_verbatim(),
+        _ => false,
+    }
+}
+
+/// Reports whether appending a segment needs a separator first.
+///
+/// A separator is added unless the receiver is empty (where `push`
+/// semantics start the path with the segment) or already ends in one.
+/// On Windows the trailing check is prefix-aware: inside a verbatim
+/// receiver only a trailing backslash counts as a separator, so a
+/// trailing forward slash still needs a backslash appended. Outside
+/// verbatim receivers both separators count on Windows; elsewhere
+/// only `/` counts.
+fn needs_separator(current: &std::ffi::OsStr) -> bool {
+    #[cfg(windows)]
+    if receiver_is_verbatim(current) {
+        return !matches!(current.as_encoded_bytes().last(), Some(b'\\'));
+    }
+    let bytes = current.as_encoded_bytes();
+    match bytes.last() {
+        None => false,
+        Some(b'/') => false,
+        #[cfg(windows)]
+        Some(b'\\') => false,
+        _ => true,
+    }
+}
+
 /// Git checkout topology. A private observation inside the Git
 /// discoverer; the public discovery output is a single selected base.
 #[derive(Clone, Debug, PartialEq, Eq)]
