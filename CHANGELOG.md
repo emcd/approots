@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-14
+
+### Added
+
+- Validated subpath appendages: `ResolvedRoot::join` derives subpaths
+  beneath a resolved root from caller-supplied segments, enforcing the
+  shared token grammar with first-offender errors, appending at the
+  byte level so the receiver survives literally, and inheriting the
+  receiver's provenance unchanged.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
