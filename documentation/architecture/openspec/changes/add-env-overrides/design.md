@@ -4,7 +4,7 @@
 
 Every consumer re-implements flag-versus-environment precedence before calling the library: LitRPG's `state_directory` chain (CLI > `LITRPG_STATE_DIRECTORY` > debug config > fallback), Agentmux's flag/env/XDG tiers. The library currently accepts only a single explicit root per resolve, so callers must collapse their own chains and all provenance arrives as `ExplicitDirectory`. The goal is to let the library own the chain for callers that opt in, so LitRPG can delete its caller-side resolution and match on provenance instead.
 
-Constraints carried forward: read-only resolution; no template/env expansion in returned paths; blank environment reads as absent and explicit empties are refused (platform-roots); provenance from the same captured inputs as the root (honest adapter); closed vocabulary (any addition needs both tiers).
+Constraints carried forward: read-only resolution; no template/env expansion in returned paths; platform-provider blank reads as absent and explicit empties are refused (platform-roots), while declared environment values follow the stricter env-overrides rule (only unset reads as absent; zero-length is malformed); provenance from the same captured inputs as the root (honest adapter); closed vocabulary (any addition needs both tiers).
 
 ## Goals / Non-Goals
 
@@ -20,9 +20,9 @@ Non-Goals: no app-prefix convention (`{APP}_{CLASS}_DIRECTORY` auto-reading); no
 
 3. **Precedence explicit > env > discovery/development > platform, `Some` beats env.** Rationale: matches every existing consumer chain (CLI > env > fallback), so LitRPG's migration is a deletion, not a reorder. A `PartialRoots::Some` is an explicit-tier value and keeps explicit-tier precedence.
 
-4. **Unset or zero-length reads as absent; any other value validates like the explicit tier.** Rationale: mirrors the platform tier (which filters zero-length only) — a whitespace-only value is non-empty and validates as a relative path. No new validation grammar is introduced.
+4. **Unset reads as absent; zero-length is an `EmptyPath` error.** Rationale: omissibility is not nullability — only an absent variable falls through, exactly like the explicit tier refuses empty paths. This catches accidental `VAR=` exports (for example from unset shell expansions without `set -u`) loudly instead of silently falling through to another tier, where a state root could land somewhere surprising. A whitespace-only value is non-empty and validates as a relative path. No new validation grammar is introduced.
 
-5. **Capture once per resolve.** Rationale: the platform-snapshot lesson (R1) — read the declared variables at resolve start and derive root and provenance from that snapshot, never re-reading around provider calls. A family resolve captures once for all kinds.
+5. **Capture once per resolve, cached per distinct name.** Rationale: the platform-snapshot lesson (R1) — read the declared variables at resolve start and derive root and provenance from that capture, never re-reading around provider calls. A family resolve captures once for all gap kinds. Each distinct variable name is read exactly once and the cached native value (including absence) is reused for every class declaring that name. Windows may resolve case aliases to the same OS variable, but different declared spellings are separate cache keys and separate reads; no equality guarantee across reads under mutation. One read per name per capture is guaranteed; an atomic process-wide snapshot is explicitly not claimed.
 
 6. **Native reads, resolve-time declaration checks.** Values are read with `var_os` (the `var`/`var_os` distinction in `std::env`: only the `_os` form preserves non-UTF8 bytes), and variable names that are empty or contain `=`/NUL plus repeated per-class declarations are typed refusals (`InvalidEnvDeclaration`, `DuplicateEnvDeclaration`) raised at capture, before any tier resolves. Rationale: declaration errors must surface even when the tier never runs, and lossy conversion would silently retarget a valid non-UTF8 root.
 

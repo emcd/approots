@@ -17,12 +17,12 @@ fn join_appends_consumer_subpaths_with_provenance() {
     // provenance inherited unchanged across all six variants.
     let base = temp_dir("append-base");
     for provenance in [
-        Provenance::CallerProvided,
-        Provenance::SuppliedDirectory,
-        Provenance::DevelopmentCommon,
-        Provenance::DevelopmentWorktree,
-        Provenance::PlatformEnvironment,
-        Provenance::PlatformDefault,
+        Provenance::ExplicitDirectory,
+        Provenance::ExplicitBase,
+        Provenance::Discovery,
+        Provenance::Discovery,
+        Provenance::SysvarUserDirectory,
+        Provenance::DefaultUserDirectory,
     ] {
         let root = root_with(base.clone(), provenance);
         let derived = root.join(&["logs", "op-9"]).expect("valid segments");
@@ -37,7 +37,7 @@ fn join_appends_consumer_subpaths_with_provenance() {
             "receiver must survive byte-identically"
         );
     }
-    let root = root_with(base.clone(), Provenance::SuppliedDirectory);
+    let root = root_with(base.clone(), Provenance::ExplicitBase);
     assert_eq!(
         root.join(&["profiles"]).expect("single segment").path,
         base.join("profiles")
@@ -51,7 +51,7 @@ fn join_appends_consumer_subpaths_with_provenance() {
 #[test]
 fn join_refuses_invalid_segments_by_name() {
     let base = temp_dir("append-invalid");
-    let root = root_with(base, Provenance::CallerProvided);
+    let root = root_with(base, Provenance::ExplicitDirectory);
     // Each case names its exact offender, including the first of
     // several bad tokens (validate-all-first, in order).
     for (segments, offender) in [
@@ -79,7 +79,7 @@ fn join_refuses_invalid_segments_by_name() {
 #[test]
 fn join_empty_list_is_identity_and_receiver_is_literal() {
     let base = temp_dir("append-literal");
-    let root = root_with(base.clone(), Provenance::DevelopmentWorktree);
+    let root = root_with(base.clone(), Provenance::Discovery);
     assert_eq!(
         root.join(&[]).expect("empty list"),
         root,
@@ -89,7 +89,7 @@ fn join_empty_list_is_identity_and_receiver_is_literal() {
     // survives byte-identically instead of being popped or
     // canonicalized away.
     let semantic = base.join("child").join("..");
-    let root = root_with(semantic.clone(), Provenance::CallerProvided);
+    let root = root_with(semantic.clone(), Provenance::ExplicitDirectory);
     let derived = root.join(&["logs"]).expect("semantic receiver");
     let expected = {
         let mut bytes = semantic.as_os_str().to_os_string();
@@ -106,7 +106,7 @@ fn join_empty_list_is_identity_and_receiver_is_literal() {
             .windows(2)
             .any(|pair| pair == b"..")
     );
-    assert_eq!(derived.provenance, Provenance::CallerProvided);
+    assert_eq!(derived.provenance, Provenance::ExplicitDirectory);
 }
 
 /// Windows-only: verbatim receivers recognise backslash solely as
@@ -116,19 +116,21 @@ fn join_empty_list_is_identity_and_receiver_is_literal() {
 #[cfg(windows)]
 #[test]
 fn join_keeps_verbatim_receiver_literal() {
-    let trailing =
-        root_with(PathBuf::from(r"\\?\C:\base/"), Provenance::CallerProvided);
+    let trailing = root_with(
+        PathBuf::from(r"\\?\C:\base/"),
+        Provenance::ExplicitDirectory,
+    );
     let derived = trailing.join(&["logs"]).expect("verbatim trailing slash");
     assert_eq!(
         derived.path.as_os_str(),
         PathBuf::from(r"\\?\C:\base/\logs").as_os_str(),
         "verbatim trailing '/' needs a backslash, never fusion"
     );
-    assert_eq!(derived.provenance, Provenance::CallerProvided);
+    assert_eq!(derived.provenance, Provenance::ExplicitDirectory);
 
     let dotted = root_with(
         PathBuf::from(r"\\?\C:\base\child\.."),
-        Provenance::DevelopmentWorktree,
+        Provenance::Discovery,
     );
     let derived = dotted.join(&["logs"]).expect("verbatim dotdot");
     assert_eq!(
@@ -136,7 +138,7 @@ fn join_keeps_verbatim_receiver_literal() {
         PathBuf::from(r"\\?\C:\base\child\..\logs").as_os_str(),
         "verbatim '..' must survive byte-identically"
     );
-    assert_eq!(derived.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(derived.provenance, Provenance::Discovery);
 }
 
 /// Non-Windows: a Windows-looking string keeps native separator
@@ -146,12 +148,12 @@ fn join_keeps_verbatim_receiver_literal() {
 #[test]
 fn join_keeps_native_separators_for_verbatim_looking_receiver() {
     let receiver =
-        root_with(PathBuf::from("//?/base"), Provenance::CallerProvided);
+        root_with(PathBuf::from("//?/base"), Provenance::ExplicitDirectory);
     let derived = receiver.join(&["logs"]).expect("native join");
     assert_eq!(
         derived.path.as_os_str(),
         PathBuf::from("//?/base/logs").as_os_str(),
         "Unix must not emulate Windows verbatim grammar"
     );
-    assert_eq!(derived.provenance, Provenance::CallerProvided);
+    assert_eq!(derived.provenance, Provenance::ExplicitDirectory);
 }

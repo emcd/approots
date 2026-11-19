@@ -32,3 +32,12 @@ The library SHALL apply the precedence `caller-supplied explicit root → declar
 
 - **WHEN** a caller passes an absolute override resolved from the environment (for example a per-test temporary state directory) while a repository checkout is also discoverable
 - **THEN** the library returns the override and never consults the checkout.
+
+### Requirement: Propagation-safe normalization
+
+The library SHALL normalize propagated roots to absolute paths lexically without canonicalizing, SHALL read blank platform-provider environment values as absent, and SHALL reject explicit empty values. The blank-as-absent rule governs platform-provider inputs only; caller-declared environment variables follow the stricter env-overrides rule where only an unset variable reads as absent and a zero-length value is malformed.
+
+#### Scenario: Stamped root survives child working directories
+
+- **WHEN** a resolved root is propagated to a child with its own working directory
+- **THEN** the root still addresses the same location because it was absolutized lexically and never rewritten through symlinks.

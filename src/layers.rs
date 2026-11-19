@@ -71,7 +71,7 @@ impl LayeredRoots {
             }
             resolved.push(ResolvedRoot {
                 path: layer.clone(),
-                provenance: Provenance::CallerProvided,
+                provenance: Provenance::ExplicitDirectory,
             });
         }
         Ok(resolved)

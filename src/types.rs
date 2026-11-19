@@ -54,21 +54,27 @@ impl DiscovererGenus {
     }
 }
 
-/// Where a resolved root came from. This set is closed.
+/// Where a resolved root came from. This set is closed: values name
+/// the root's source and shape (an exact directory vs a base for
+/// layout composition), never any discoverer- or topology-specific
+/// concept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provenance {
-    /// Supplied explicitly by the caller (flag or environment).
-    CallerProvided,
-    /// Beneath a caller-supplied directory.
-    SuppliedDirectory,
-    /// Beneath the common worktree's development tree.
-    DevelopmentCommon,
-    /// Beneath the current worktree's development tree.
-    DevelopmentWorktree,
-    /// Platform root influenced by a platform environment variable.
-    PlatformEnvironment,
-    /// Computed platform default.
-    PlatformDefault,
+    /// Exact directory passed by the calling application.
+    ExplicitDirectory,
+    /// Base for layout composition passed by the calling application.
+    ExplicitBase,
+    /// Layout derived from a discovered base.
+    Discovery,
+    /// Platform per-user root influenced by a system environment variable.
+    SysvarUserDirectory,
+    /// Computed platform per-user default.
+    DefaultUserDirectory,
+    /// Exact directory read from a caller-declared environment variable.
+    AppvarDirectory,
+    /// Base for layout composition read from a caller-declared
+    /// environment variable.
+    AppvarBase,
 }
 
 /// One resolved root together with its provenance.
@@ -251,6 +257,15 @@ pub enum ResolutionError {
     },
     /// A second discoverer was registered for an occupied genus.
     DuplicateDiscoverer(DiscovererGenus),
+    /// An environment declaration named an unusable variable.
+    InvalidEnvDeclaration {
+        /// The declared variable name.
+        name: String,
+        /// Why the name is unusable.
+        reason: &'static str,
+    },
+    /// A second environment variable was declared for one class.
+    DuplicateEnvDeclaration(DirectoryClass),
 }
 
 /// Refuses Windows drive-relative and root-relative shapes.
@@ -363,6 +378,14 @@ impl Display for ResolutionError {
                 formatter,
                 "duplicate discoverer for genus {}",
                 genus.label()
+            ),
+            Self::InvalidEnvDeclaration { name, reason } => write!(
+                formatter,
+                "invalid environment declaration {name:?}: {reason}"
+            ),
+            Self::DuplicateEnvDeclaration(class) => write!(
+                formatter,
+                "duplicate environment declaration for {class:?}"
             ),
             Self::Unreadable(path) => {
                 write!(formatter, "cannot read {}", path.display())

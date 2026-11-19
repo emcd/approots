@@ -33,7 +33,7 @@ fn cargo_identity_accepts_matches_and_rejects_at_selected_base() {
     };
     let matched = resolve("fixture-app").expect("match");
     assert_eq!(matched.path, repo.join(".auxiliary/state/fixture-app"));
-    assert_eq!(matched.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(matched.provenance, Provenance::Discovery);
     assert!(matches!(
         resolve("other-app"),
         Err(ResolutionError::IdentityMismatch { .. })
@@ -78,7 +78,7 @@ fn local_structure_mates_and_refuses_escape() {
     let root = local_root(
         &approots::ResolvedRoot {
             path: base.clone(),
-            provenance: Provenance::SuppliedDirectory,
+            provenance: Provenance::ExplicitBase,
         },
         DirectoryClass::State,
         "fixture-app",
@@ -86,7 +86,7 @@ fn local_structure_mates_and_refuses_escape() {
     )
     .expect("local root");
     assert_eq!(root.path, base.join(".auxiliary/state/fixture-app"));
-    assert_eq!(root.provenance, Provenance::SuppliedDirectory);
+    assert_eq!(root.provenance, Provenance::ExplicitBase);
     assert!(!root.path.exists(), "resolution creates nothing");
 
     let bad = LocalStructure {
@@ -95,7 +95,7 @@ fn local_structure_mates_and_refuses_escape() {
     };
     let base_root = approots::ResolvedRoot {
         path: base.clone(),
-        provenance: Provenance::CallerProvided,
+        provenance: Provenance::ExplicitDirectory,
     };
     assert!(
         local_root(&base_root, DirectoryClass::State, "fixture-app", &bad)
@@ -105,14 +105,14 @@ fn local_structure_mates_and_refuses_escape() {
     let caller = local_root(
         &approots::ResolvedRoot {
             path: base.clone(),
-            provenance: Provenance::CallerProvided,
+            provenance: Provenance::ExplicitDirectory,
         },
         DirectoryClass::Cache,
         "fixture-app",
         &structure,
     )
     .expect("caller base");
-    assert_eq!(caller.provenance, Provenance::CallerProvided);
+    assert_eq!(caller.provenance, Provenance::ExplicitDirectory);
     assert!(validate_token("a/b").is_err());
     assert!(validate_token("..").is_err());
     assert!(validate_token("good-name_1").is_ok());
@@ -135,7 +135,7 @@ fn git_absence_skips_standalone_cargo_search() {
         .expect("absence falls through");
     assert!(matches!(
         resolved.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
     ));
     assert!(!resolved.path.join(".auxiliary").exists());
 }
@@ -156,7 +156,7 @@ fn devfile_only_search_finds_upward_and_absent_means_fallthrough() {
         .resolve(DirectoryClass::State, None, Some(&nested))
         .expect("standalone search");
     assert_eq!(resolved.path, base.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
     // No marker anywhere: the tier is absent, not an error.
     let empty = temp_dir("standalone-empty");
     let fallen = cargo_resolver("fixture-app")
@@ -164,7 +164,7 @@ fn devfile_only_search_finds_upward_and_absent_means_fallthrough() {
         .expect("no marker falls through");
     assert!(matches!(
         fallen.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
     ));
 }
 
@@ -254,7 +254,7 @@ fn scope_omitted_defaults_to_local_in_linked_worktree() {
     let resolved = git_resolver("fixture-app")
         .resolve(DirectoryClass::State, None, Some(&linked))
         .expect("default scope");
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
     let expected =
         strip_verbatim_prefix(linked.canonicalize().expect("canonical"));
     assert_eq!(resolved.path, expected.join(".auxiliary/state/fixture-app"));
@@ -336,7 +336,7 @@ fn explicit_root_decides_before_arguments_or_discovery() {
         .resolve(DirectoryClass::State, Some(&explicit), Some(&base))
         .expect("explicit wins");
     assert_eq!(resolved.path, explicit);
-    assert_eq!(resolved.provenance, Provenance::CallerProvided);
+    assert_eq!(resolved.provenance, Provenance::ExplicitDirectory);
 }
 
 /// A VCS discoverer that requires `mode = strict`, counting its
@@ -508,7 +508,7 @@ fn standalone_search_follows_physical_ancestry_through_dotdot() {
         start.join("..").join(".auxiliary/state/fixture-app"),
         "search must select the physical ancestor, not the lexical child"
     );
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[cfg(unix)]
@@ -544,7 +544,7 @@ fn standalone_search_refuses_dangling_marker() {
         .resolve(DirectoryClass::State, None, Some(&child))
         .expect("genuine absence");
     assert_eq!(resolved.path, outer.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[cfg(unix)]
@@ -578,7 +578,7 @@ fn standalone_search_reads_through_healthy_marker_link() {
         .resolve(DirectoryClass::State, None, Some(&child))
         .expect("healthy link");
     assert_eq!(resolved.path, child.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[cfg(unix)]
@@ -613,7 +613,7 @@ fn standalone_search_follows_physical_ancestry_through_symlink() {
         start.join("..").join(".auxiliary/state/fixture-app"),
         "search must follow the symlink to the physical ancestor"
     );
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 /// Builds an all-filled family from four distinct absolute bases.
@@ -638,7 +638,7 @@ fn family_all_filled_validates_without_executing() {
     // StrictVcs requires `mode = strict` but gets no bag, and the
     // devfile bag is invalid: all-filled bypasses argument
     // validation, discovery, and platform entirely, so nothing
-    // executes and every root reports CallerProvided.
+    // executes and every root reports ExplicitDirectory.
     let validations = Arc::new(AtomicUsize::new(0));
     let executions = Arc::new(AtomicUsize::new(0));
     let resolver = Resolver::new("fixture-app")
@@ -663,7 +663,7 @@ fn family_all_filled_validates_without_executing() {
         (&bundle.data, &paths[3]),
     ] {
         assert_eq!(&root.path, path);
-        assert_eq!(root.provenance, Provenance::CallerProvided);
+        assert_eq!(root.provenance, Provenance::ExplicitDirectory);
     }
     assert_eq!(validations.load(Ordering::SeqCst), 0);
     assert_eq!(executions.load(Ordering::SeqCst), 0);
@@ -673,7 +673,7 @@ fn family_all_filled_validates_without_executing() {
 fn family_gaps_fill_through_discovery() {
     // Only State supplied; the rest run the normal chain. With the
     // Cargo discoverer and a fixture start, gaps resolve through the
-    // standalone upward search as DevelopmentWorktree.
+    // standalone upward search as Discovery.
     let outer = temp_dir("family-gaps");
     fs::write(
         outer.join("Cargo.toml"),
@@ -693,7 +693,7 @@ fn family_gaps_fill_through_discovery() {
         .resolve_partially_explicit(&partial, Some(&leaf))
         .expect("gaps fill");
     assert_eq!(bundle.state.path, state);
-    assert_eq!(bundle.state.provenance, Provenance::CallerProvided);
+    assert_eq!(bundle.state.provenance, Provenance::ExplicitDirectory);
     for (root, segment) in [
         (&bundle.configuration, "configuration"),
         (&bundle.cache, "cache"),
@@ -704,7 +704,7 @@ fn family_gaps_fill_through_discovery() {
             outer.join(".auxiliary").join(segment).join("fixture-app"),
             "gap resolves through discovery"
         );
-        assert_eq!(root.provenance, Provenance::DevelopmentWorktree);
+        assert_eq!(root.provenance, Provenance::Discovery);
     }
 }
 
@@ -728,7 +728,7 @@ fn family_gaps_without_start_fall_back_to_platform() {
     for root in [&bundle.configuration, &bundle.cache, &bundle.data] {
         assert!(matches!(
             root.provenance,
-            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+            Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
         ));
     }
     // A bad bag is not suppressed by the platform fallback.
@@ -780,7 +780,7 @@ fn family_registered_discoverer_never_runs_without_start() {
     ] {
         assert!(matches!(
             root.provenance,
-            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+            Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
         ));
     }
 }
@@ -838,7 +838,7 @@ fn family_some_roots_are_used_literally() {
         &bundle.data,
     ] {
         assert_eq!(root.path, raw_base);
-        assert_eq!(root.provenance, Provenance::CallerProvided);
+        assert_eq!(root.provenance, Provenance::ExplicitDirectory);
     }
 }
 
@@ -851,7 +851,7 @@ fn local_root_composes_exactly_and_inherits_provenance() {
     let supplied = local_root(
         &approots::ResolvedRoot {
             path: supplied_base.clone(),
-            provenance: Provenance::SuppliedDirectory,
+            provenance: Provenance::ExplicitBase,
         },
         DirectoryClass::State,
         "litrpg",
@@ -859,14 +859,14 @@ fn local_root_composes_exactly_and_inherits_provenance() {
     )
     .expect("supplied base");
     assert_eq!(supplied.path, supplied_base.join(".auxiliary/state/litrpg"));
-    assert_eq!(supplied.provenance, Provenance::SuppliedDirectory);
+    assert_eq!(supplied.provenance, Provenance::ExplicitBase);
     // A raw base ending in the application name still composes
     // literally: rawness is a caller precondition, not a checked shape.
     let raw_base = temp_dir("raw-base").join("litrpg");
     let raw = local_root(
         &approots::ResolvedRoot {
             path: raw_base.clone(),
-            provenance: Provenance::CallerProvided,
+            provenance: Provenance::ExplicitDirectory,
         },
         DirectoryClass::State,
         "litrpg",
@@ -874,7 +874,7 @@ fn local_root_composes_exactly_and_inherits_provenance() {
     )
     .expect("raw base");
     assert_eq!(raw.path, raw_base.join(".auxiliary/state/litrpg"));
-    assert_eq!(raw.provenance, Provenance::CallerProvided);
+    assert_eq!(raw.provenance, Provenance::ExplicitDirectory);
 }
 
 #[test]
@@ -887,7 +887,7 @@ fn local_root_refuses_unresolved_bases() {
     // relative roots: local_root takes no explicit start directory.
     assert!(matches!(
         local_root(
-            &base(PathBuf::new(), Provenance::SuppliedDirectory),
+            &base(PathBuf::new(), Provenance::ExplicitBase),
             DirectoryClass::State,
             "fixture-app",
             &structure,
@@ -896,10 +896,7 @@ fn local_root_refuses_unresolved_bases() {
     ));
     assert!(matches!(
         local_root(
-            &base(
-                PathBuf::from("relative/base"),
-                Provenance::SuppliedDirectory,
-            ),
+            &base(PathBuf::from("relative/base"), Provenance::ExplicitBase,),
             DirectoryClass::State,
             "fixture-app",
             &structure,
@@ -912,7 +909,7 @@ fn local_root_refuses_unresolved_bases() {
         // base during a join.
         assert!(matches!(
             local_root(
-                &base(PathBuf::from("C:foo"), Provenance::SuppliedDirectory,),
+                &base(PathBuf::from("C:foo"), Provenance::ExplicitBase,),
                 DirectoryClass::State,
                 "fixture-app",
                 &structure,
@@ -921,7 +918,7 @@ fn local_root_refuses_unresolved_bases() {
         ));
         assert!(matches!(
             local_root(
-                &base(PathBuf::from("\\foo"), Provenance::SuppliedDirectory,),
+                &base(PathBuf::from("\\foo"), Provenance::ExplicitBase,),
                 DirectoryClass::State,
                 "fixture-app",
                 &structure,

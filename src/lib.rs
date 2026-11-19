@@ -25,10 +25,22 @@ pub use types::{
     ResolutionError, ResolvedRoot, ResolvedRoots, validate_token,
 };
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
+
+/// Counts declared-environment reads, test builds only.
+///
+/// Integration tests cannot observe reads (a stable environment
+/// makes recapture indistinguishable from single capture), and the
+/// count must not become public API surface, so the counter lives
+/// behind `cfg(test)` with exactly one inline test below.
+#[cfg(test)]
+static ENV_CAPTURE_READS: AtomicU64 = AtomicU64::new(0);
 
 use crate::types::{refuse_windows_ambient_shape, validate_root_shape};
 
@@ -52,7 +64,7 @@ pub fn supplied_root(
     }
     Ok(ResolvedRoot {
         path: base.join(class.segment()),
-        provenance: Provenance::SuppliedDirectory,
+        provenance: Provenance::ExplicitBase,
     })
 }
 
@@ -68,6 +80,16 @@ pub struct Resolver {
     vcs: Option<Box<dyn VcsDiscoverer>>,
     devfile: Option<Box<dyn DevfileDiscoverer>>,
     arguments: BTreeMap<DiscovererGenus, BTreeMap<String, String>>,
+    env: Vec<(DirectoryClass, EnvShape, String)>,
+}
+
+/// What a declared environment value holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnvShape {
+    /// An exact directory, validated like the explicit tier.
+    Directory,
+    /// A base for layout composition, validated like a supplied base.
+    Base,
 }
 
 impl Clone for Resolver {
@@ -79,6 +101,7 @@ impl Clone for Resolver {
             vcs: self.vcs.as_ref().map(|vcs| vcs.clone_box()),
             devfile: self.devfile.as_ref().map(|dev| dev.clone_box()),
             arguments: self.arguments.clone(),
+            env: self.env.clone(),
         }
     }
 }
@@ -102,6 +125,7 @@ impl Resolver {
             vcs: None,
             devfile: None,
             arguments: BTreeMap::new(),
+            env: Vec::new(),
         })
     }
 
@@ -196,19 +220,60 @@ impl Resolver {
         self
     }
 
-    /// Resolves one class through the documented precedence chain:
-    /// explicit root, then discovered root, then platform.
+    /// Declares an environment variable holding an exact directory
+    /// for a class.
     ///
-    /// Relative explicit roots join against `start`. Discovery runs
-    /// only through registered discoverers; with none registered, an
-    /// eligible resolution falls through to the platform tier.
+    /// Declaration is opt-in and per class: undeclared classes
+    /// resolve exactly as without any declaration. The variable is
+    /// read once per resolve with native preservation; an unset
+    /// value reads as absent while a zero-length value is malformed
+    /// (`EmptyPath`), and any other value validates exactly like
+    /// the explicit tier. Declaration problems (an unusable name,
+    /// or a second declaration for one class) are typed refusals
+    /// raised at capture, before any tier resolves.
+    #[must_use]
+    pub fn env_directory(
+        mut self,
+        class: DirectoryClass,
+        variable: impl Into<String>,
+    ) -> Self {
+        self.env.push((class, EnvShape::Directory, variable.into()));
+        self
+    }
+
+    /// Declares an environment variable holding a layout base for a
+    /// class.
+    ///
+    /// Behaves like [`Resolver::env_directory`], except the value is
+    /// a base for layout composition (validated like a supplied
+    /// base) rather than an exact directory.
+    #[must_use]
+    pub fn env_base(
+        mut self,
+        class: DirectoryClass,
+        variable: impl Into<String>,
+    ) -> Self {
+        self.env.push((class, EnvShape::Base, variable.into()));
+        self
+    }
+
+    /// Resolves one class through the documented precedence chain:
+    /// explicit root, then declared environment value, then
+    /// discovered root, then platform.
+    ///
+    /// Relative explicit roots join against `start`. A caller-supplied
+    /// explicit root masks that class's declared variable entirely.
+    /// Discovery runs only through registered discoverers; with none
+    /// registered, an eligible resolution falls through to the
+    /// platform tier.
     ///
     /// # Errors
     ///
     /// Returns [`ResolutionError`] for invalid inputs, invalid
-    /// discoverer arguments, identity mismatches, unsupported
-    /// topologies, and unavailable platform roots. Genuine absence of
-    /// a repository falls through to the platform.
+    /// environment declarations, invalid discoverer arguments,
+    /// identity mismatches, unsupported topologies, and unavailable
+    /// platform roots. Genuine absence of a repository falls through
+    /// to the platform.
     pub fn resolve(
         &self,
         class: DirectoryClass,
@@ -218,7 +283,27 @@ impl Resolver {
         if let Some(explicit) = explicit {
             return self.resolve_explicit(explicit, start);
         }
+        let captured = self.capture_env(std::slice::from_ref(&class))?;
+        // The environment barrier runs before argument validation;
+        // argument validation still runs when the environment wins.
+        let env_root = self.apply_env(class, start, &captured)?;
         self.validate_arguments()?;
+        if let Some(root) = env_root {
+            return Ok(root);
+        }
+        self.resolve_tier(class, start)
+    }
+
+    /// Resolves one class past the explicit and environment tiers.
+    ///
+    /// The caller owns capture and argument validation; this runs
+    /// discovery from `start` when discoverers are registered and
+    /// otherwise falls back to the platform tier.
+    fn resolve_tier(
+        &self,
+        class: DirectoryClass,
+        start: Option<&Path>,
+    ) -> Result<ResolvedRoot, ResolutionError> {
         if let Some(base) = self.run_discovery(start)? {
             return local_root(
                 &ResolvedRoot {
@@ -237,28 +322,161 @@ impl Resolver {
         )
     }
 
+    /// Captures the declared environment for the given classes.
+    ///
+    /// Each captured class contributes its shape and value. Each
+    /// distinct variable name is read exactly once with native
+    /// preservation, and the cached value (including absence) is
+    /// reused for every class declaring that name; per-class shape
+    /// validation and provenance still apply independently.
+    /// Declaration errors surface here, before any tier resolves;
+    /// classes without a declaration contribute nothing. Cache keys
+    /// are the exact declared names. Windows may resolve case
+    /// aliases to the same OS variable, but different declared
+    /// spellings are separate cache keys and separate reads; no
+    /// equality guarantee across reads under mutation. One read per
+    /// name per capture is guaranteed; an atomic process-wide
+    /// snapshot is not claimed.
+    fn capture_env(
+        &self,
+        classes: &[DirectoryClass],
+    ) -> Result<
+        Vec<(DirectoryClass, EnvShape, Option<OsString>)>,
+        ResolutionError,
+    > {
+        let mut captured = Vec::with_capacity(classes.len());
+        let mut read: Vec<(String, Option<OsString>)> = Vec::new();
+        for class in classes {
+            let mut matching =
+                self.env.iter().filter(|(declared, _, _)| declared == class);
+            let Some((_, shape, variable)) = matching.next() else {
+                continue;
+            };
+            if matching.next().is_some() {
+                return Err(ResolutionError::DuplicateEnvDeclaration(*class));
+            }
+            Self::validate_env_name(variable)?;
+            let value = if let Some((_, cached)) =
+                read.iter().find(|(name, _)| name == variable)
+            {
+                cached.clone()
+            } else {
+                let value = std::env::var_os(variable);
+                #[cfg(test)]
+                ENV_CAPTURE_READS.fetch_add(1, Ordering::SeqCst);
+                read.push((variable.clone(), value.clone()));
+                value
+            };
+            captured.push((*class, *shape, value));
+        }
+        Ok(captured)
+    }
+
+    /// Rejects unusable environment variable names.
+    ///
+    /// `std::env::var_os` reports empty names and names containing
+    /// `=` or NUL as absent (`None`) rather than refusing them, so
+    /// without this check a malformed declaration would silently
+    /// fall through instead of failing loudly. Declarations are
+    /// checked before any read.
+    fn validate_env_name(variable: &str) -> Result<(), ResolutionError> {
+        let problem = if variable.is_empty() {
+            "name is empty"
+        } else if variable.contains('=') {
+            "name contains '='"
+        } else if variable.contains('\0') {
+            "name contains NUL"
+        } else {
+            return Ok(());
+        };
+        Err(ResolutionError::InvalidEnvDeclaration {
+            name: variable.to_string(),
+            reason: problem,
+        })
+    }
+
+    /// Applies a captured environment value for one class, if any.
+    ///
+    /// An unset value reads as absent; a zero-length value is
+    /// malformed. Any other value validates exactly like the
+    /// matching explicit shape. Validation is a pure function of
+    /// the captured bytes, so re-applying one capture always
+    /// agrees with itself.
+    fn apply_env(
+        &self,
+        class: DirectoryClass,
+        start: Option<&Path>,
+        captured: &[(DirectoryClass, EnvShape, Option<OsString>)],
+    ) -> Result<Option<ResolvedRoot>, ResolutionError> {
+        let Some((_, shape, value)) =
+            captured.iter().find(|(declared, _, _)| *declared == class)
+        else {
+            return Ok(None);
+        };
+        let Some(value) = value.as_ref() else {
+            return Ok(None);
+        };
+        if value.is_empty() {
+            // Omissibility is not nullability: an explicitly set
+            // empty value is malformed, not absent. This catches
+            // accidental `VAR=` exports (for example from unset
+            // shell expansions without `set -u`) instead of
+            // silently falling through to another tier.
+            return Err(ResolutionError::EmptyPath);
+        }
+        let value = PathBuf::from(value);
+        match shape {
+            EnvShape::Directory => Ok(Some(ResolvedRoot {
+                path: self.joined_path(&value, start)?,
+                provenance: Provenance::AppvarDirectory,
+            })),
+            EnvShape::Base => {
+                let base = self.joined_path(&value, start)?;
+                local_root(
+                    &ResolvedRoot {
+                        path: base,
+                        provenance: Provenance::AppvarBase,
+                    },
+                    class,
+                    &self.application,
+                    &self.structure,
+                )
+                .map(Some)
+            },
+        }
+    }
+
     /// Resolves a whole family with per-kind complete-or-missing roots.
     ///
     /// Each `Some` value is a complete directory for its class,
     /// validated exactly like the explicit tier (absolute and
     /// non-empty; Windows ambient-dependent shapes refused; a
     /// relative value joins against `start`, and relative with no
-    /// start is a typed error) and reported `CallerProvided`, never
-    /// composed further. Each `None` value runs the normal chain for
-    /// its class: discovery from `start` when discoverers are
+    /// start is a typed error) and reported `ExplicitDirectory`, never
+    /// composed further. A `Some` value beats that kind's declared
+    /// environment variable, which is never read. Each `None` value
+    /// runs the normal chain for its class, including the declared
+    /// environment tier: discovery from `start` when discoverers are
     /// registered, otherwise the platform tier — a missing start
-    /// falls back to platform and never consults the ambient working
-    /// directory. Every `Some` field is validated before any
-    /// gap-filling executes; an all-filled input validates every
-    /// field and returns the bundle, bypassing argument validation,
-    /// discovery, and platform roots entirely.
+    /// falls back to the environment tier when its value is
+    /// absolute, otherwise to platform when the variable is unset,
+    /// and never consults the ambient working directory. Malformed
+    /// values (relative with no `start`, ambient-dependent shapes,
+    /// zero-length) are typed refusals, never fallbacks. Validation
+    /// runs in ordered phases: every
+    /// `Some` field, then every eligible gap environment value, then
+    /// discoverer arguments — before any gap discovery or platform
+    /// work. All-filled input validates every field and returns the
+    /// bundle without consulting the environment or validating
+    /// arguments at all.
     ///
     /// # Errors
     ///
-    /// Returns [`ResolutionError`] for invalid supplied roots, invalid
-    /// discoverer arguments, identity mismatches, unsupported
-    /// topologies, and unavailable platform roots, exactly as the
-    /// per-kind path reports them.
+    /// Returns [`ResolutionError`] for invalid supplied roots,
+    /// invalid environment declarations, invalid discoverer
+    /// arguments, identity mismatches, unsupported topologies, and
+    /// unavailable platform roots, exactly as the per-kind path
+    /// reports them.
     pub fn resolve_partially_explicit(
         &self,
         partial: &PartialRoots,
@@ -277,8 +495,8 @@ impl Resolver {
         ];
         // Validate every supplied root first, through the explicit
         // tier exactly: shape, Windows ambient, relative join. No
-        // gap-filling, discovery, or argument validation runs before
-        // this loop completes.
+        // gap-filling, environment capture, discovery, or argument
+        // validation runs before this loop completes.
         let mut resolved: [Option<ResolvedRoot>; 4] = [None, None, None, None];
         for ((_, field), slot) in fields.iter().zip(resolved.iter_mut()) {
             if let Some(path) = field {
@@ -286,8 +504,9 @@ impl Resolver {
             }
         }
         if resolved.iter().all(Option::is_some) {
-            // All-filled: pure validation, no argument validation,
-            // discovery, or platform involved.
+            // All-filled: pure validation. The environment is never
+            // captured or consulted, and arguments are never
+            // validated.
             let [configuration, state, cache, data] = resolved;
             let bundle = ResolvedRoots {
                 configuration: configuration.expect("validated above"),
@@ -297,12 +516,34 @@ impl Resolver {
             };
             return Ok(bundle);
         }
-        // Gaps run the normal per-kind chain, which validates
-        // arguments, discovers, and falls back exactly as `resolve`
-        // without an explicit root does.
+        // Capture the declared environment once for the gap kinds
+        // only; `Some` kinds mask their declarations entirely.
+        let gaps: Vec<DirectoryClass> = fields
+            .iter()
+            .zip(resolved.iter())
+            .filter(|(_, slot)| slot.is_none())
+            .map(|((class, _), _)| *class)
+            .collect();
+        let captured = self.capture_env(&gaps)?;
+        // The environment barrier: every eligible gap value validates
+        // before any gap discovery or platform work runs. Invalid
+        // values are never masked by another kind's valid root.
+        for class in &gaps {
+            self.apply_env(*class, start, &captured)?;
+        }
+        // Argument validation runs even when the environment tier
+        // will supply gap roots.
+        self.validate_arguments()?;
+        // Fill each gap from the shared capture: environment, then
+        // discovery, then platform. No recapture, no repeated
+        // argument validation.
         for ((class, _), slot) in fields.iter().zip(resolved.iter_mut()) {
             if slot.is_none() {
-                *slot = Some(self.resolve(*class, None, start)?);
+                if let Some(root) = self.apply_env(*class, start, &captured)? {
+                    *slot = Some(root);
+                } else {
+                    *slot = Some(self.resolve_tier(*class, start)?);
+                }
             }
         }
         let [configuration, state, cache, data] = resolved;
@@ -404,6 +645,19 @@ impl Resolver {
         explicit: &Path,
         start: Option<&Path>,
     ) -> Result<ResolvedRoot, ResolutionError> {
+        Ok(ResolvedRoot {
+            path: self.joined_path(explicit, start)?,
+            provenance: Provenance::ExplicitDirectory,
+        })
+    }
+
+    /// Validates an explicit-shape path: absolute, or relative joined
+    /// against an absolute `start` with `..` preserved semantically.
+    fn joined_path(
+        &self,
+        explicit: &Path,
+        start: Option<&Path>,
+    ) -> Result<PathBuf, ResolutionError> {
         if explicit.as_os_str().is_empty() {
             return Err(ResolutionError::EmptyPath);
         }
@@ -411,9 +665,9 @@ impl Resolver {
         // ordinary-relative join, in either absoluteness branch: they
         // must never silently join against the start.
         refuse_windows_ambient_shape(explicit)?;
-        let path: PathBuf = if explicit.is_absolute() {
+        if explicit.is_absolute() {
             validate_root_shape(explicit)?;
-            explicit.to_path_buf()
+            Ok(explicit.to_path_buf())
         } else {
             let Some(start) = start else {
                 return Err(ResolutionError::RelativeStartDirectory(
@@ -427,11 +681,177 @@ impl Resolver {
             }
             // Preserve `..` semantically: lexical popping would
             // retarget paths through symlinked components.
-            start.join(explicit)
-        };
-        Ok(ResolvedRoot {
-            path,
-            provenance: Provenance::CallerProvided,
-        })
+            Ok(start.join(explicit))
+        }
+    }
+}
+
+#[cfg(test)]
+mod env_capture_tests {
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex, atomic::Ordering},
+    };
+
+    use super::ENV_CAPTURE_READS;
+    use crate::{
+        DirectoryClass, DiscoveredBase, Discoverer, PartialRoots, Provenance,
+        ResolutionError, Resolver, VcsDiscoverer,
+    };
+
+    /// Records invocations alongside the read count at call time,
+    /// so the capture-once test can prove every read completed
+    /// before the first downstream discovery call.
+    #[derive(Debug, Clone, Default)]
+    struct RecordingDiscoverer {
+        calls: Arc<Mutex<Vec<(PathBuf, u64)>>>,
+    }
+
+    impl Discoverer for RecordingDiscoverer {
+        fn genus(&self) -> crate::DiscovererGenus {
+            crate::DiscovererGenus::Vcs
+        }
+    }
+
+    impl VcsDiscoverer for RecordingDiscoverer {
+        fn validate_args(
+            &self,
+            _args: &BTreeMap<String, String>,
+        ) -> Result<(), ResolutionError> {
+            Ok(())
+        }
+
+        fn discover(
+            &self,
+            start: &Path,
+            _args: &BTreeMap<String, String>,
+        ) -> Result<Option<DiscoveredBase>, ResolutionError> {
+            // Recorded alongside the call: all environment reads
+            // must already be done when the first discovery runs.
+            let at = ENV_CAPTURE_READS.load(Ordering::SeqCst);
+            self.calls
+                .lock()
+                .expect("calls")
+                .push((start.to_path_buf(), at));
+            Ok(Some(DiscoveredBase {
+                path: start.to_path_buf(),
+                provenance: Provenance::Discovery,
+            }))
+        }
+
+        fn clone_box(&self) -> Box<dyn VcsDiscoverer> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn reads() -> u64 {
+        ENV_CAPTURE_READS.load(Ordering::SeqCst)
+    }
+
+    static STATE_VAR: &str = "APPROOTS_TEST_CAPTURE_STATE";
+    static CACHE_VAR: &str = "APPROOTS_TEST_CAPTURE_CACHE";
+    static START_VAR: &str = "APPROOTS_TEST_CAPTURE_START";
+    static CHILD_FLAG: &str = "APPROOTS_CAPTURE_CHILD";
+
+    // The single inline test this crate carries: capture-once is
+    // unobservable through any public contract under a stable
+    // environment, so it needs the test-only read counter. Exactly
+    // one `#[test]` lives in this binary, and the counter plus the
+    // discoverer seam are `cfg(test)`-only with zero production
+    // impact. All fixture environments are owned by a guarded
+    // self-child (safe `Command::env` only): the runner process
+    // environment is never mutated, so no `unsafe` env writes exist
+    // anywhere in this test.
+    #[test]
+    fn env_capture_reads_once_per_class() {
+        use std::process::Command;
+        if std::env::var(CHILD_FLAG).as_deref() == Ok("1") {
+            child_body();
+            return;
+        }
+        let exe = std::env::current_exe().expect("test exe");
+        let unique = std::process::id();
+        let output = Command::new(&exe)
+            .args([
+                "env_capture_tests::env_capture_reads_once_per_class",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CHILD_FLAG, "1")
+            .env(STATE_VAR, capture_dir(&unique, "state"))
+            .env(CACHE_VAR, capture_dir(&unique, "cache"))
+            .env(START_VAR, capture_dir(&unique, "start"))
+            .output()
+            .expect("spawn capture child");
+        assert!(
+            output.status.success(),
+            "capture child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Native absolute fixture paths: absolute on every platform,
+    /// unlike hardcoded `/tmp/...` literals.
+    fn capture_dir(unique: &u32, tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("approots-capture-{tag}-{unique}"))
+    }
+
+    fn child_body() {
+        ENV_CAPTURE_READS.store(0, Ordering::SeqCst);
+        let start =
+            PathBuf::from(std::env::var_os(START_VAR).expect("start var"));
+        let recorder = RecordingDiscoverer::default();
+        let discovered = recorder.calls.clone();
+        let resolver = Resolver::new("fixture-app")
+            .expect("resolver")
+            .register_vcs(recorder)
+            .expect("register vcs")
+            .env_directory(DirectoryClass::State, STATE_VAR)
+            .env_directory(DirectoryClass::Cache, CACHE_VAR);
+        // State and Cache gaps fill from the environment; the
+        // remaining gaps run real discovery afterwards.
+        let bundle = resolver
+            .resolve_partially_explicit(&PartialRoots::default(), Some(&start))
+            .expect("family resolves");
+        assert_eq!(bundle.state.provenance, Provenance::AppvarDirectory);
+        assert_eq!(bundle.cache.provenance, Provenance::AppvarDirectory);
+        // Exactly one read per declared gap class...
+        assert_eq!(reads(), 2);
+        // ...all completed before the first discovery call, which
+        // ran afterwards without triggering any re-read.
+        let calls = discovered.lock().expect("calls");
+        assert!(
+            !calls.is_empty(),
+            "discovery must run for the undeclared gaps"
+        );
+        assert!(
+            calls.iter().all(|(_, at)| *at == 2),
+            "every read completes before discovery starts"
+        );
+        assert_eq!(reads(), 2, "no recapture after downstream work");
+        drop(calls);
+        // A single-class resolve reads exactly once more...
+        resolver
+            .resolve(DirectoryClass::State, None, None)
+            .expect("single resolve");
+        assert_eq!(reads(), 3);
+        // ...while untouched classes are never read.
+        resolver
+            .resolve(DirectoryClass::Configuration, None, None)
+            .expect("undeclared resolve");
+        assert_eq!(reads(), 3);
+        // A shared variable is read once and reused for both
+        // classes, not once per class.
+        let shared = Resolver::new("fixture-app")
+            .expect("resolver")
+            .env_directory(DirectoryClass::State, STATE_VAR)
+            .env_directory(DirectoryClass::Cache, STATE_VAR);
+        let bundle = shared
+            .resolve_partially_explicit(&PartialRoots::default(), None)
+            .expect("shared variable resolves");
+        assert_eq!(bundle.state.provenance, Provenance::AppvarDirectory);
+        assert_eq!(bundle.cache.provenance, Provenance::AppvarDirectory);
+        assert_eq!(reads(), 4, "one read per distinct name");
     }
 }

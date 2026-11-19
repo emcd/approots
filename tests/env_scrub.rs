@@ -86,7 +86,7 @@ fn hostile_git_directory_does_not_divert_discovery() {
     }
     let resolved = resolved.expect("discovery survives contamination");
     assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 
     // Missing Git is an explicit outcome, never a silent fallback.
     let saved_path = std::env::var_os("PATH");

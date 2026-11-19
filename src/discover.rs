@@ -19,10 +19,9 @@ use crate::types::{DiscovererGenus, Provenance, ResolutionError};
 
 /// A single discovered base together with its provenance.
 ///
-/// Git scope `Common` selects the common worktree root with
-/// development-common provenance; scope `Local` (and Cargo-only
-/// discovery) selects the worktree root with development-worktree
-/// provenance.
+/// Anchor selection stays discoverer-internal (for example the Git
+/// discoverer's `scope` option); every discovered base reports
+/// [`Provenance::Discovery`], regardless of which anchor was selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredBase {
     /// The selected base directory.
@@ -206,14 +205,12 @@ impl VcsDiscoverer for VcsDiscovererGit {
         match crate::git::discover_checkout(start) {
             Ok(checkout) => {
                 let (path, provenance) = match scope {
-                    Scope::Common => (
-                        checkout.common_worktree_root,
-                        Provenance::DevelopmentCommon,
-                    ),
-                    Scope::Local => (
-                        checkout.worktree_root,
-                        Provenance::DevelopmentWorktree,
-                    ),
+                    Scope::Common => {
+                        (checkout.common_worktree_root, Provenance::Discovery)
+                    },
+                    Scope::Local => {
+                        (checkout.worktree_root, Provenance::Discovery)
+                    },
                 };
                 Ok(Some(DiscoveredBase { path, provenance }))
             },
@@ -333,7 +330,7 @@ impl DevfileDiscoverer for DevfileDiscovererCargo {
                     }
                     return Ok(Some(DiscoveredBase {
                         path: directory,
-                        provenance: Provenance::DevelopmentWorktree,
+                        provenance: Provenance::Discovery,
                     }));
                 },
                 // No marker here: keep walking upward. Permission and

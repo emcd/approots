@@ -82,7 +82,7 @@ impl PlatformSnapshot {
             {
                 return (
                     Some(candidate.clone()),
-                    Provenance::PlatformEnvironment,
+                    Provenance::SysvarUserDirectory,
                 );
             }
             let default = self.home.as_ref().map(|home| match class {
@@ -91,9 +91,9 @@ impl PlatformSnapshot {
                 DirectoryClass::Cache => home.join(".cache"),
                 DirectoryClass::Data => home.join(".local/share"),
             });
-            return (default, Provenance::PlatformDefault);
+            return (default, Provenance::DefaultUserDirectory);
         }
-        (provider_default, Provenance::PlatformDefault)
+        (provider_default, Provenance::DefaultUserDirectory)
     }
 }
 

@@ -23,7 +23,7 @@ fn supplied_resolution_uses_absolute_base_only() {
     let resolved = supplied_root(&base, DirectoryClass::Configuration)
         .expect("resolve supplied");
     assert_eq!(resolved.path, base.join("configuration"));
-    assert_eq!(resolved.provenance, Provenance::SuppliedDirectory);
+    assert_eq!(resolved.provenance, Provenance::ExplicitBase);
     assert!(!resolved.path.exists(), "resolution creates nothing");
     assert!(matches!(
         supplied_root(Path::new("relative"), DirectoryClass::State),
@@ -43,14 +43,8 @@ fn normal_clone_collapses_scopes_from_nested_directory() {
     // Nested invocation resolves against the invocation directory:
     // both scopes collapse to the same checkout base.
     for (scope, provenance) in [
-        (
-            VcsDiscovererGit::SCOPE_LOCAL,
-            Provenance::DevelopmentWorktree,
-        ),
-        (
-            VcsDiscovererGit::SCOPE_COMMON,
-            Provenance::DevelopmentCommon,
-        ),
+        (VcsDiscovererGit::SCOPE_LOCAL, Provenance::Discovery),
+        (VcsDiscovererGit::SCOPE_COMMON, Provenance::Discovery),
     ] {
         let resolved = scope_arg(git_resolver("fixture-app"), scope)
             .resolve(DirectoryClass::State, None, Some(&nested))
@@ -76,7 +70,7 @@ fn linked_worktree_scopes_select_distinct_roots() {
         local.path,
         expected_linked.join(".auxiliary/state/fixture-app")
     );
-    assert_eq!(local.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(local.provenance, Provenance::Discovery);
     let common =
         scope_arg(git_resolver("fixture-app"), VcsDiscovererGit::SCOPE_COMMON)
             .resolve(DirectoryClass::Configuration, None, Some(&linked))
@@ -85,7 +79,7 @@ fn linked_worktree_scopes_select_distinct_roots() {
         common.path,
         repo.join(".auxiliary/configuration/fixture-app")
     );
-    assert_eq!(common.provenance, Provenance::DevelopmentCommon);
+    assert_eq!(common.provenance, Provenance::Discovery);
     assert_ne!(local.path, common.path);
 }
 
@@ -98,7 +92,7 @@ fn precedence_prefers_explicit_then_platform_without_discoverers() {
         .resolve(DirectoryClass::State, Some(&explicit), Some(&repo))
         .expect("explicit wins");
     assert_eq!(resolved.path, explicit);
-    assert_eq!(resolved.provenance, Provenance::CallerProvided);
+    assert_eq!(resolved.provenance, Provenance::ExplicitDirectory);
 
     // No discoverer registered: no checkout adoption, platform fallback.
     let platform = resolver
@@ -106,7 +100,7 @@ fn precedence_prefers_explicit_then_platform_without_discoverers() {
         .expect("platform fallback");
     assert!(matches!(
         platform.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
     ));
     assert!(
         !platform.path.join(".auxiliary").exists()
@@ -129,7 +123,7 @@ fn clone_under_modules_directory_still_discovers() {
         .resolve(DirectoryClass::State, None, Some(&repo))
         .expect("discover modules");
     assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[test]
@@ -145,7 +139,7 @@ fn corrupt_repository_falls_through_by_git_output() {
         .expect("corrupt falls through");
     assert!(matches!(
         resolved.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
     ));
 }
 
@@ -181,7 +175,7 @@ fn separate_git_directory_uses_real_worktree() {
         .resolve(DirectoryClass::State, None, Some(&worktree))
         .expect("discover");
     assert_eq!(resolved.path, worktree.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[test]
@@ -245,7 +239,7 @@ fn layers_are_closed_ordered_and_ambiguity_is_typed() {
     assert!(
         resolved
             .iter()
-            .all(|root| root.provenance == Provenance::CallerProvided)
+            .all(|root| root.provenance == Provenance::ExplicitDirectory)
     );
 
     #[cfg(unix)]
@@ -310,7 +304,7 @@ fn platform_roots_resolve_for_every_class() {
         );
         assert!(matches!(
             resolved.provenance,
-            Provenance::PlatformEnvironment | Provenance::PlatformDefault
+            Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
         ));
     }
 }
@@ -348,7 +342,7 @@ fn windows_state_root_uses_local_application_data() {
         approots::platform_root("fixture-app", DirectoryClass::State)
             .expect("state root");
     assert_eq!(resolved.path, dirs.data_local_dir().join("fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::PlatformDefault);
+    assert_eq!(resolved.provenance, Provenance::DefaultUserDirectory);
 }
 
 #[cfg(target_os = "macos")]
@@ -359,7 +353,7 @@ fn macos_state_root_uses_application_support() {
         approots::platform_root("fixture-app", DirectoryClass::State)
             .expect("state root");
     assert_eq!(resolved.path, dirs.data_dir().join("fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::PlatformDefault);
+    assert_eq!(resolved.provenance, Provenance::DefaultUserDirectory);
 }
 
 #[cfg(windows)]
@@ -437,7 +431,7 @@ fn windows_linked_checkout_discovers_through_alias() {
             fs::canonicalize(&repo).expect("canonical repo")
         )
     );
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[cfg(windows)]
@@ -488,7 +482,7 @@ fn source_export_falls_through_to_platform() {
         .expect("platform fallback for source export");
     assert!(matches!(
         resolved.provenance,
-        Provenance::PlatformEnvironment | Provenance::PlatformDefault
+        Provenance::SysvarUserDirectory | Provenance::DefaultUserDirectory
     ));
     // Windows path shapes are refused by the token grammar everywhere.
     assert!(validate_token("a:b").is_err());
@@ -511,7 +505,7 @@ fn symlinked_alias_discovers_real_checkout() {
         .resolve(DirectoryClass::State, None, Some(&alias))
         .expect("discover alias");
     assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 // Windows filesystems strip trailing spaces from names; Unix keeps them.
@@ -556,8 +550,8 @@ fn xdg_provenance_comes_from_one_snapshot() {
             .expect("expected provenance")
             .as_str()
         {
-            "env" => Provenance::PlatformEnvironment,
-            _ => Provenance::PlatformDefault,
+            "env" => Provenance::SysvarUserDirectory,
+            _ => Provenance::DefaultUserDirectory,
         };
         assert_eq!(resolved.provenance, expected_provenance);
         return;
@@ -661,7 +655,7 @@ fn symlink_dotdot_start_keeps_semantic_resolution() {
         .resolve(DirectoryClass::State, None, Some(&start))
         .expect("discover");
     assert_eq!(resolved.path, repo.join(".auxiliary/state/fixture-app"));
-    assert_eq!(resolved.provenance, Provenance::DevelopmentWorktree);
+    assert_eq!(resolved.provenance, Provenance::Discovery);
 }
 
 #[cfg(unix)]
