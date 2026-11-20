@@ -90,17 +90,19 @@ use approots::{
     DevfileDiscovererCargo, DirectoryClass, Resolver, VcsDiscovererGit,
 };
 
-let resolved = Resolver::new( "myapp" )?
-    .register_vcs( VcsDiscovererGit )?
-    .register_devfile( DevfileDiscovererCargo )?
+// The builder accumulates one configured resolver.
+let resolved = Resolver::new( "myapp" )? // validates the application name
+    .register_vcs( VcsDiscovererGit )? // opt in to Git-based discovery
+    .register_devfile( DevfileDiscovererCargo )? // validate discovered Cargo roots
+    // Declare a State override looked up before discovery.
     .env_directory( DirectoryClass::State, "MYAPP_STATE_DIRECTORY" )
     .resolve(
-        DirectoryClass::State,
-        // No explicit path: consult the declared environment,
+        DirectoryClass::State, // the class to resolve
+        // No explicit path: try the declared environment first,
         // then discover from the start directory below,
         // then fall back to platform-standard locations.
-        None,
-        Some( Path::new( "/home/user/src/myapp" ) ),
+        None, // no caller-supplied directory for this call
+        Some( Path::new( "/home/user/src/myapp" ) ), // where discovery starts
     )?;
 
 println!( "{} {:?}", resolved.path.display( ), resolved.provenance );
