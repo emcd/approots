@@ -16,4 +16,4 @@
 ## 3. Verification and review
 
 - [x] 3.1 Verify gates (nextest, clippy with warnings denied, openspec strict, cross-target checks) and confirm the vocabulary/precedence deltas against the existing suites.
-- [ ] 3.2 Route the packet to Tier-1 (sequenced after rename-provenance approval), then Tier-2 on Tier-1 approval, with no pushes of unapproved commits.
+- [x] 3.2 Route the packet to Tier-1 (sequenced after rename-provenance approval), then Tier-2 on Tier-1 approval, with no pushes of unapproved commits. DONE: both tiers approved.
