@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
+### Changed
+
+- **BREAKING**: the closed provenance vocabulary is renamed to a
+  source-first series: `CallerProvided` → `ExplicitDirectory`,
+  `SuppliedDirectory` → `ExplicitBase`,
+  `DevelopmentCommon`/`DevelopmentWorktree` → `Discovery`,
+  `PlatformEnvironment` → `SysvarUserDirectory`,
+  `PlatformDefault` → `DefaultUserDirectory`. Resolved paths are
+  unchanged; only the reported values change, and downstream
+  exhaustive matches must be updated.
+
+### Added
+
+- Opt-in per-class environment overrides: `Resolver::env_directory`
+  and `Resolver::env_base` declare one variable per class, read once
+  with native preservation. Precedence is explicit → environment →
+  discovery → platform, reported as `AppvarDirectory`/`AppvarBase`.
+  An unset variable falls through; a zero-length value is an
+  `EmptyPath` refusal rather than silent absence.
+
 ## [0.3.0] - 2026-11-14
 
 ### Added

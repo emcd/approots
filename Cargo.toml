@@ -1,6 +1,6 @@
 [package]
 name = "approots"
-version = "0.3.0"
+version = "0.4.0"
 description = "Directory locations for application caches, configuration, and state."
 authors = []
 license = "Apache-2.0"
