@@ -57,8 +57,9 @@ declared, an exact directory outranks a base-derived directory.
 - Opt-in discovery: Git support is built in, and discovery is
   generic — Mercurial or proprietary systems implement the same
   discoverer interface. Nothing is ever searched unless you opt in.
-- Opt-in environment overrides: declare one variable per class and the
-  library reads, validates, and reports it like any other tier.
+- Opt-in environment overrides: declare an exact directory and/or a
+  layout base per class and the library reads, validates, and reports
+  them like any other tier, exact directory first.
 - Ordered directory bases: supply several candidate bases as
   one closed list and resolve them in precedence order. An
   unreadable entry is reported as an error rather than silently
