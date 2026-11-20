@@ -302,11 +302,13 @@ fn undeclared_class_untouched() {
     const VAR: &str = "APPROOTS_TEST_ENV_OTHER";
     const CASE: &str = "untouched";
     if is_child(CASE) {
-        let base = PathBuf::from(var("APPROOTS_ENV_BASE"));
         let declared = state_resolver(VAR);
         let plain = Resolver::new("fixture-app").expect("resolver");
         // Same class, same tier, with and without the declaration:
-        // byte-identical paths and provenance.
+        // byte-identical paths and provenance. No location
+        // assertion: the platform root's home is provider-defined
+        // (under the fixture HOME on Unix, under AppData on
+        // Windows), so only identity and provenance are asserted.
         let from_declared = declared
             .resolve(DirectoryClass::Cache, None, None)
             .expect("declared resolve");
@@ -315,12 +317,10 @@ fn undeclared_class_untouched() {
             .expect("plain resolve");
         assert_eq!(from_declared, from_plain);
         assert_eq!(from_declared.provenance, Provenance::DefaultUserDirectory);
-        assert!(from_declared.path.starts_with(&base));
         return;
     }
     let home = fixture_home();
-    let mut vars =
-        vec![("APPROOTS_ENV_BASE".to_string(), string(home.clone()))];
+    let mut vars = vec![];
     hermetic(&mut vars, &home);
     vars.push((VAR.to_string(), string(temp_dir("env-other"))));
     assert_child_ok(
