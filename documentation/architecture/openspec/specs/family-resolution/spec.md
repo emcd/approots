@@ -8,12 +8,12 @@ Whole-family resolution with per-kind complete-or-missing roots: one call valida
 
 ### Requirement: Family partial-explicit resolution
 
-The library SHALL provide family input/output structs and a `Resolver::resolve_partially_explicit` method settling all four directory classes in one call. The input (`PartialRoots`) SHALL carry one `Option<PathBuf>` per class; each `Some` value SHALL be a complete directory validated exactly like the explicit tier — absolute and non-empty, refusing Windows ambient-dependent shapes, joining a relative value against `start` (typed error when relative with no start) — reported with `CallerProvided` provenance and never composed further. Each `None` value SHALL run the normal chain for its class: discovery from `start` when discoverers are registered, otherwise the platform tier; `None` with no start SHALL fall back to platform and SHALL NOT consult the ambient working directory. Every `Some` field SHALL be validated before any gap-filling executes. All-filled input SHALL validate every field and return the bundle without executing any discovery. The output bundle SHALL carry one `ResolvedRoot` per class with per-kind provenance from the tier that supplied it.
+The library SHALL provide family input/output structs and a `Resolver::resolve_partially_explicit` method settling all four directory classes in one call. The input (`PartialRoots`) SHALL carry one `Option<PathBuf>` per class; each `Some` value SHALL be a complete directory validated exactly like the explicit tier — absolute and non-empty, refusing Windows ambient-dependent shapes, joining a relative value against `start` (typed error when relative with no start) — reported with `ExplicitDirectory` provenance and never composed further. Each `None` value SHALL run the normal chain for its class: discovery from `start` when discoverers are registered, otherwise the platform tier; `None` with no start SHALL fall back to platform and SHALL NOT consult the ambient working directory. Every `Some` field SHALL be validated before any gap-filling executes. All-filled input SHALL validate every field and return the bundle without executing any discovery. The output bundle SHALL carry one `ResolvedRoot` per class with per-kind provenance from the tier that supplied it.
 
 #### Scenario: Complete family validates and gaps fill
 
 - **WHEN** a caller supplies complete Configuration and State directories (`~/.config/agentmux-rnd`, `~/.local/state/agentmux-rnd`) with Cache and Data missing
-- **THEN** the supplied kinds validate and report `CallerProvided` while Cache and Data resolve through discovery or platform, all in one returned bundle.
+- **THEN** the supplied kinds validate and report `ExplicitDirectory` while Cache and Data resolve through discovery or platform, all in one returned bundle.
 
 #### Scenario: Invalid `Some` fails before gap-filling
 
@@ -28,7 +28,7 @@ The library SHALL provide family input/output structs and a `Resolver::resolve_p
 #### Scenario: All-filled input is a pure validator
 
 - **WHEN** every kind is supplied complete and valid
-- **THEN** the bundle returns with `CallerProvided` provenance throughout and no subprocess, marker search, or filesystem discovery work runs.
+- **THEN** the bundle returns with `ExplicitDirectory` provenance throughout and no subprocess, marker search, or filesystem discovery work runs.
 
 #### Scenario: Complete values are used literally
 

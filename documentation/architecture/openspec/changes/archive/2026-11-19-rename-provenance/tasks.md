@@ -5,9 +5,9 @@
 
 ## 2. Archive-time manual Purpose sync
 
-- [ ] 2.1 At archive, replace the development-layout main-spec Purpose with the neutralized text (no Common-worktree/worktree-local/core-scope encoding): "Discovered development candidates with caller-selectable anchor scope and caller-overridable layout. Owns layout and anchor scope; delegates layer-list mechanics to `platform-roots`." Delta files cannot carry Purpose changes, so this is a tracked manual sync step.
+- [x] 2.1 At archive, replace the development-layout main-spec Purpose with the neutralized text (no Common-worktree/worktree-local/core-scope encoding): "Discovered development candidates with caller-selectable anchor scope and caller-overridable layout. Owns layout and anchor scope; delegates layer-list mechanics to `platform-roots`." Delta files cannot carry Purpose changes, so this is a tracked manual sync step. DONE at archive.
 
 ## 3. Verification and review
 
 - [x] 3.1 Verify gates (nextest, clippy with warnings denied, openspec strict, cross-target checks) and confirm byte-identical resolution output apart from labels.
-- [ ] 3.2 Route the packet to Tier-1, then Tier-2 on Tier-1 approval, with explicit instruction to verify the generic vocabulary carries no topology-specific terms, and with no pushes of unapproved commits.
+- [x] 3.2 Route the packet to Tier-1, then Tier-2 on Tier-1 approval, with explicit instruction to verify the generic vocabulary carries no topology-specific terms, and with no pushes of unapproved commits. DONE: both tiers approved.

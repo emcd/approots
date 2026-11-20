@@ -13,7 +13,7 @@ The library SHALL resolve configuration, state, cache, and data locations relati
 #### Scenario: Resolve beneath supplied directory
 
 - **WHEN** a caller supplies a directory and requests the configuration kind
-- **THEN** the library returns the conventional configuration location beneath that directory with `SuppliedDirectory` provenance and creates nothing.
+- **THEN** the library returns the conventional configuration location beneath that directory with `ExplicitBase` provenance and creates nothing.
 
 #### Scenario: Non-repository directory is accepted
 
@@ -63,7 +63,7 @@ The library SHALL NOT search ancestor trees of the supplied directory unless the
 
 ### Requirement: Local structure on supplied bases
 
-The library SHALL provide `local_root`, mating a `LocalStructure` onto an explicitly supplied base `ResolvedRoot` and inheriting that base's provenance exactly (for a raw supplied base, `SuppliedDirectory`), so supplied bases receive the same structured layout as discovered bases.
+The library SHALL provide `local_root`, mating a `LocalStructure` onto an explicitly supplied base `ResolvedRoot` and inheriting that base's provenance exactly (for a raw supplied base, `ExplicitBase`), so supplied bases receive the same structured layout as discovered bases.
 
 #### Scenario: Parallel instances on distinct supplied bases
 

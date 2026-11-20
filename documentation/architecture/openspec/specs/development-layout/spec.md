@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Common-worktree and worktree-local `.auxiliary` candidates with explicit `Common` vs `Worktree` scope selection and caller-overridable layout. Owns layout and scope; delegates layer-list mechanics to `platform-roots`.
+Discovered development candidates with caller-selectable anchor scope and caller-overridable layout. Owns layout and anchor scope; delegates layer-list mechanics to `platform-roots`.
 
 ## Requirements
 
@@ -41,17 +41,17 @@ The library SHALL name the four directory classes `Configuration`, `State`, `Cac
 #### Scenario: Supplied base example
 
 - **WHEN** a caller mates the default structure onto an absolute supplied base (POSIX example `/srv/inst1`; any absolute base on the host platform) for the state class of application `litrpg`
-- **THEN** the result is that base joined with `.auxiliary/state/litrpg` (`/srv/inst1/.auxiliary/state/litrpg` on POSIX) with `SuppliedDirectory` provenance.
+- **THEN** the result is that base joined with `.auxiliary/state/litrpg` (`/srv/inst1/.auxiliary/state/litrpg` on POSIX) with `ExplicitBase` provenance.
 
-#### Scenario: Discovered Git examples
+#### Scenario: Discovered examples
 
 - **WHEN** the Git discoverer selects the common root `/repo` (`scope` = `Common`) for configuration, or the worktree root `/repo-wt` (`scope` = `Local`) for state (POSIX examples; any absolute discovered base on the host platform)
-- **THEN** the results are those bases joined with `.auxiliary/configuration/<application>` and `.auxiliary/state/<application>` respectively, with `DevelopmentCommon` and `DevelopmentWorktree` provenance; a Cargo-only discovered base likewise carries `DevelopmentWorktree` as the local-anchor value of the closed provenance set.
+- **THEN** the results are those bases joined with `.auxiliary/configuration/<application>` and `.auxiliary/state/<application>` respectively, each with `Discovery` provenance; a Cargo-only discovered base likewise carries `Discovery` provenance. Anchor selection is the discoverer's `scope` option, and no VCS topology leaks into the provenance.
 
 #### Scenario: Platform root is not a local_root base
 
 - **WHEN** a caller holds a `platform_root` result (already ending in the application name)
-- **THEN** that root is used as a complete root; `Resolver` never feeds its completed platform-tier result into `local_root`, and platform-tier results keep their exact platform paths and `PlatformEnvironment`/`PlatformDefault` provenance.
+- **THEN** that root is used as a complete root; `Resolver` never feeds its completed platform-tier result into `local_root`, and platform-tier results keep their exact platform paths and `SysvarUserDirectory`/`DefaultUserDirectory` provenance.
 
 #### Scenario: Raw base ending in the application name still composes
 
