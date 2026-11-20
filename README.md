@@ -5,28 +5,33 @@
 [![Package Version](https://img.shields.io/crates/v/approots)](https://crates.io/crates/approots/)
 [![Documentation](https://docs.rs/approots/badge.svg)](https://docs.rs/approots/)
 
-Directory locations for application caches, configuration, and state.
+The `approots` library answers one question — *where should this application
+keep a given directory?* It resolves platform-standard locations on Linux,
+macOS, and Windows. It optionally accepts explicit paths, environment
+variables, and bases discovered from version control and development markers.
+The library only resolves candidate directories: it never creates, modifies, or
+deletes anything on the filesystem. Custom appendages can be joined to resolved
+paths.
 
-A directory class is a kind of application-related directory, such
-as `Configuration`, `State`, `Cache`, or `Data`. Every resolution
-asks for one class at a time (or one of each, through the family
-call), and the class decides which conventional location applies.
+Followed conventions and standards include:
+- [Apple file-system conventions](https://developer.apple.com/documentation/foundation/using-the-file-system-effectively)
+- [Windows Known Folders](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid)
+- [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/)
+<!-- TODO: Linux FHS, etc... for site-wide directories. -->
 
-**Provenance** is what determined a particular directory from the
-resolver. For example, it can be `ExplicitDirectory` (the caller
-passed a path), `AppvarDirectory` (a declared environment variable
-supplied it), `Discovery` (a discoverer found the base it was
-composed under), or `DefaultUserDirectory` (a computed platform
-default). Every returned directory carries exactly one provenance
-value, so callers can match on source instead of re-deriving it.
+## Introduction
 
-`approots` answers one question — *where should this application
-keep a given directory?* In production it resolves platform-standard
-locations on Linux, macOS, and Windows. It optionally accepts
-explicit paths, environment variables, and bases discovered from
-version control and development markers. The library only resolves
-candidate directories: it never creates, modifies, or deletes
-anything on the filesystem.
+A **directory class** is a kind of application-related directory, such as
+`Cache`, `Configuration`, `Data`, or `State`. Every resolution asks for one
+class at a time (or one of each, through a whole-family call), and the class
+decides which conventional location applies.
+
+**Provenance** is what determined a particular directory from the resolver. For
+example, it can be `ExplicitDirectory` (the caller passed a path),
+`AppvarDirectory` (a declared environment variable supplied it), `Discovery` (a
+discoverer found the base it was composed under), or `DefaultUserDirectory` (a
+computed platform default). Every returned directory carries exactly one
+provenance value, so callers can match on source instead of re-deriving it.
 
 Resolution follows one precedence chain. The first tier that yields a
 directory wins:
@@ -39,13 +44,12 @@ directory wins:
 | Discovery | a discoverer is registered | `Discovery` |
 | Platform default | always, as the fallback | `SysvarUserDirectory` or `DefaultUserDirectory` |
 
-Only the platform tier is unconditional; every other tier is
-opt-in — pass an argument, declare a variable, register a
-discoverer, or leave the tier out entirely. The two environment rows
-are one tier with two shapes: neither outranks the other, and both
-sit between the explicit argument and discovery.
+Only the platform tier is unconditional; every other tier is opt-in — pass an
+argument, declare a variable, register a discoverer, or leave the tier out
+entirely. The table reads top-down: where both environment shapes are
+declared, an exact directory outranks a base-derived directory.
 
-Key features:
+## Features
 
 - Platform directories: standard per-OS locations on Linux, macOS,
   and Windows, reporting whether each came from the environment or a
@@ -53,18 +57,17 @@ Key features:
 - Opt-in discovery: Git support is built in, and discovery is
   generic — Mercurial or proprietary systems implement the same
   discoverer interface. Nothing is ever searched unless you opt in.
-- Environment overrides: declare one variable per class and the
+- Opt-in environment overrides: declare one variable per class and the
   library reads, validates, and reports it like any other tier.
 - Ordered directory bases: supply several candidate bases as
-  one closed list and resolve them in precedence order. An unreadable
-  entry is reported as an error rather than silently skipped. The
-  library resolves directories, never files: per-file lookup stays
-  with the caller.
+  one closed list and resolve them in precedence order. An
+  unreadable entry is reported as an error rather than silently
+  skipped.
 - Validated subpath appendages: derive `logs/<op-id>`-style
   subdirectories beneath any resolved directory through one checked
   join.
 
-Custom directory layouts are supported; see
+Custom layouts by directory class are supported; see
 [local structures](documentation/examples/local-structures.md).
 
 ## Installation
@@ -77,9 +80,9 @@ cargo add approots
 
 ## Usage
 
-`Resolver` follows the builder pattern: each option returns a
-configured resolver, ending in `resolve` for one class or
-`resolve_partially_explicit` for the whole family at once.
+`Resolver` follows the builder pattern: each option returns a configured
+resolver, ending in `resolve` for one class or `resolve_partially_explicit` for
+the whole family at once.
 
 ```rust
 use std::path::Path;
@@ -103,24 +106,12 @@ let resolved = Resolver::new( "myapp" )?
 println!( "{} {:?}", resolved.path.display( ), resolved.provenance );
 ```
 
-Production use is the common case and needs no setup: with no
-discoverers registered and no variables declared, the same `resolve`
-call goes straight to platform-standard directories. The example
-above adds checkout discovery and one environment override on top —
-Git and `Cargo.toml` support are included, and other version-control
-systems plug into the same interface. See the crate-level
-documentation (`cargo doc --open approots`) for the full contract.
-
-## What is this for
-
-- Programs that take no path arguments and need platform-standard
-  directories with the application name in the right place.
-- Programs given explicit paths or environment variables, which are
-  validated and reported with their provenance.
-- Programs with an opt-in discovery step, which resolve a
-  repository base and build the project's local directories under
-  what they find. Discovery never runs unless a discoverer is
-  registered for it.
+Production use is the common case and needs no setup: with no discoverers
+registered and no variables declared, the same `resolve` call goes straight to
+platform-standard directories. The example above adds checkout discovery and
+one environment override on top — Git and `Cargo.toml` support are included,
+and other version-control systems plug into the same interface. See the
+crate-level documentation (`cargo doc --open approots`) for the full contract.
 
 ## Additional Badges
 
