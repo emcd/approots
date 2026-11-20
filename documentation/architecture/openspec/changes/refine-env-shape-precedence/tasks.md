@@ -5,10 +5,10 @@
 
 ## 2. Contract tests
 
-- [ ] 2.1 Pin exact-beats-base when both are valid, and typed refusal when either shape is malformed even though the other would win (child-process fixtures, no runner env mutation).
-- [ ] 2.2 Pin single-shape behavior unchanged (all existing env tests keep passing).
+- [x] 2.1 Pin exact-beats-base when both are valid, and typed refusal when either shape is malformed even though the other would win (child-process fixtures, no runner env mutation).
+- [x] 2.2 Pin single-shape behavior unchanged (all existing env tests keep passing).
 
 ## 3. Verification and review
 
-- [ ] 3.1 Verify gates (nextest, clippy with warnings denied, openspec strict, cross-target checks).
+- [x] 3.1 Verify gates (nextest, clippy with warnings denied, openspec strict, cross-target checks).
 - [ ] 3.2 Route the packet to Tier-1, then Tier-2 on Tier-1 approval, with no pushes of unapproved commits.

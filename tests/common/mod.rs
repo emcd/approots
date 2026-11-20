@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -12,7 +13,8 @@ use std::{
 };
 
 use approots::{
-    DevfileDiscovererCargo, DiscovererGenus, Resolver, VcsDiscovererGit,
+    DevfileDiscovererCargo, DirectoryClass, DiscovererGenus, Resolver,
+    VcsDiscovererGit,
 };
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -105,4 +107,77 @@ pub fn scope_arg(resolver: Resolver, scope: &str) -> Resolver {
         VcsDiscovererGit::SCOPE_KEY,
         scope,
     )
+}
+
+/// Child-process flag shared by the isolated environment tests.
+pub const CHILD_ENV_FLAG: &str = "APPROOTS_ENV_CHILD";
+
+/// True inside a spawned child for the given case.
+pub fn is_child(case: &str) -> bool {
+    std::env::var(CHILD_ENV_FLAG).as_deref() == Ok(case)
+}
+
+/// Spawns the current test binary as a child with a fixture-owned
+/// environment: `Some` sets a variable, `None` removes it (proving
+/// nothing leaks in from the ambient parent environment).
+pub fn spawn_self(
+    test: &str,
+    case: &str,
+    vars: &[(String, Option<OsString>)],
+) -> std::process::Output {
+    let exe = std::env::current_exe().expect("test exe");
+    let mut command = Command::new(&exe);
+    command.args([test, "--exact", "--nocapture"]);
+    command.env(CHILD_ENV_FLAG, case);
+    for (key, value) in vars {
+        match value {
+            Some(bytes) => {
+                command.env(key, bytes);
+            },
+            None => {
+                command.env_remove(key);
+            },
+        }
+    }
+    command.output().expect("spawn env child")
+}
+
+pub fn assert_child_ok(output: std::process::Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} child failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+pub fn fixture_home() -> PathBuf {
+    temp_dir("env-home")
+}
+
+pub fn hermetic(vars: &mut Vec<(String, Option<OsString>)>, home: &Path) {
+    // Platform fallbacks must resolve beneath a fixture home, never
+    // the runner's real one; XDG overrides are removed outright.
+    vars.push(("HOME".to_string(), Some(home.as_os_str().to_os_string())));
+    for key in [
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    ] {
+        vars.push((key.to_string(), None));
+    }
+}
+
+pub fn state_resolver(variable: &str) -> Resolver {
+    Resolver::new("fixture-app")
+        .expect("resolver")
+        .env_directory(DirectoryClass::State, variable)
+}
+
+pub fn var(name: &str) -> String {
+    std::env::var(name).expect("fixture var")
+}
+
+pub fn string(path: PathBuf) -> Option<OsString> {
+    Some(path.into_os_string())
 }

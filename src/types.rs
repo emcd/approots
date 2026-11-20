@@ -264,7 +264,8 @@ pub enum ResolutionError {
         /// Why the name is unusable.
         reason: &'static str,
     },
-    /// A second environment variable was declared for one class.
+    /// A second environment variable with the same shape was
+    /// declared for one class.
     DuplicateEnvDeclaration(DirectoryClass),
 }
 

@@ -223,14 +223,16 @@ impl Resolver {
     /// Declares an environment variable holding an exact directory
     /// for a class.
     ///
-    /// Declaration is opt-in and per class: undeclared classes
-    /// resolve exactly as without any declaration. The variable is
-    /// read once per resolve with native preservation; an unset
-    /// value reads as absent while a zero-length value is malformed
-    /// (`EmptyPath`), and any other value validates exactly like
-    /// the explicit tier. Declaration problems (an unusable name,
-    /// or a second declaration for one class) are typed refusals
-    /// raised at capture, before any tier resolves.
+    /// Declaration is opt-in and per class, with one variable per
+    /// shape: undeclared classes resolve exactly as without any
+    /// declaration. The variable is read once per resolve with
+    /// native preservation; an unset value reads as absent while a
+    /// zero-length value is malformed (`EmptyPath`), and any other
+    /// value validates exactly like the explicit tier. Values
+    /// validate after capture, at selection time before any tier is
+    /// chosen. Declaration problems (an unusable name, or a second
+    /// declaration with the same shape for one class) are typed
+    /// refusals raised at capture, before any tier resolves.
     #[must_use]
     pub fn env_directory(
         mut self,
@@ -327,8 +329,10 @@ impl Resolver {
     /// Each captured class contributes its shape and value. Each
     /// distinct variable name is read exactly once with native
     /// preservation, and the cached value (including absence) is
-    /// reused for every class declaring that name; per-class shape
-    /// validation and provenance still apply independently.
+    /// reused for every declaration naming it; per-class, per-shape
+    /// validation and provenance still apply independently. Declaring
+    /// the same shape twice for one class is a duplicate; declaring
+    /// both shapes is allowed.
     /// Declaration errors surface here, before any tier resolves;
     /// classes without a declaration contribute nothing. Cache keys
     /// are the exact declared names. Windows may resolve case
@@ -347,27 +351,41 @@ impl Resolver {
         let mut captured = Vec::with_capacity(classes.len());
         let mut read: Vec<(String, Option<OsString>)> = Vec::new();
         for class in classes {
-            let mut matching =
-                self.env.iter().filter(|(declared, _, _)| declared == class);
-            let Some((_, shape, variable)) = matching.next() else {
-                continue;
-            };
-            if matching.next().is_some() {
-                return Err(ResolutionError::DuplicateEnvDeclaration(*class));
-            }
-            Self::validate_env_name(variable)?;
-            let value = if let Some((_, cached)) =
-                read.iter().find(|(name, _)| name == variable)
+            // At most one declaration per (class, shape): same-shape
+            // repeats are duplicates, while the two shapes may
+            // coexist with the exact directory taking precedence.
+            let mut seen = [false, false];
+            let mut declarations = Vec::new();
+            for (_, shape, variable) in
+                self.env.iter().filter(|(declared, _, _)| declared == class)
             {
-                cached.clone()
-            } else {
-                let value = std::env::var_os(variable);
-                #[cfg(test)]
-                ENV_CAPTURE_READS.fetch_add(1, Ordering::SeqCst);
-                read.push((variable.clone(), value.clone()));
-                value
-            };
-            captured.push((*class, *shape, value));
+                let slot = match shape {
+                    EnvShape::Directory => &mut seen[0],
+                    EnvShape::Base => &mut seen[1],
+                };
+                if *slot {
+                    return Err(ResolutionError::DuplicateEnvDeclaration(
+                        *class,
+                    ));
+                }
+                *slot = true;
+                Self::validate_env_name(variable)?;
+                declarations.push((*shape, variable));
+            }
+            for (shape, variable) in declarations {
+                let value = if let Some((_, cached)) =
+                    read.iter().find(|(name, _)| name == variable)
+                {
+                    cached.clone()
+                } else {
+                    let value = std::env::var_os(variable);
+                    #[cfg(test)]
+                    ENV_CAPTURE_READS.fetch_add(1, Ordering::SeqCst);
+                    read.push((variable.clone(), value.clone()));
+                    value
+                };
+                captured.push((*class, shape, value));
+            }
         }
         Ok(captured)
     }
@@ -399,51 +417,71 @@ impl Resolver {
     ///
     /// An unset value reads as absent; a zero-length value is
     /// malformed. Any other value validates exactly like the
-    /// matching explicit shape. Validation is a pure function of
-    /// the captured bytes, so re-applying one capture always
-    /// agrees with itself.
+    /// matching explicit shape. When both shapes are declared, both
+    /// validate first and the exact directory wins; an invalid value
+    /// of either shape is a typed refusal rather than a fallback to
+    /// the other. Validation is a pure function of the captured
+    /// bytes, so re-applying one capture always agrees with itself.
     fn apply_env(
         &self,
         class: DirectoryClass,
         start: Option<&Path>,
         captured: &[(DirectoryClass, EnvShape, Option<OsString>)],
     ) -> Result<Option<ResolvedRoot>, ResolutionError> {
-        let Some((_, shape, value)) =
-            captured.iter().find(|(declared, _, _)| *declared == class)
-        else {
-            return Ok(None);
-        };
-        let Some(value) = value.as_ref() else {
-            return Ok(None);
-        };
-        if value.is_empty() {
-            // Omissibility is not nullability: an explicitly set
-            // empty value is malformed, not absent. This catches
-            // accidental `VAR=` exports (for example from unset
-            // shell expansions without `set -u`) instead of
-            // silently falling through to another tier.
-            return Err(ResolutionError::EmptyPath);
-        }
-        let value = PathBuf::from(value);
-        match shape {
-            EnvShape::Directory => Ok(Some(ResolvedRoot {
-                path: self.joined_path(&value, start)?,
-                provenance: Provenance::AppvarDirectory,
-            })),
-            EnvShape::Base => {
-                let base = self.joined_path(&value, start)?;
-                local_root(
-                    &ResolvedRoot {
-                        path: base,
-                        provenance: Provenance::AppvarBase,
+        // Validate every declared value for the class before
+        // choosing: the winner never masks another shape's refusal.
+        let mut built: Vec<(EnvShape, ResolvedRoot)> = Vec::new();
+        for (_, shape, value) in captured
+            .iter()
+            .filter(|(declared, _, _)| *declared == class)
+        {
+            let Some(value) = value.as_ref() else {
+                continue;
+            };
+            if value.is_empty() {
+                // Omissibility is not nullability: an explicitly
+                // set empty value is malformed, not absent. This
+                // catches accidental `VAR=` exports (for example
+                // from unset shell expansions without `set -u`)
+                // instead of silently falling through to another
+                // tier.
+                return Err(ResolutionError::EmptyPath);
+            }
+            let value = PathBuf::from(value);
+            match shape {
+                EnvShape::Directory => built.push((
+                    *shape,
+                    ResolvedRoot {
+                        path: self.joined_path(&value, start)?,
+                        provenance: Provenance::AppvarDirectory,
                     },
-                    class,
-                    &self.application,
-                    &self.structure,
-                )
-                .map(Some)
-            },
+                )),
+                EnvShape::Base => {
+                    let base = self.joined_path(&value, start)?;
+                    built.push((
+                        *shape,
+                        local_root(
+                            &ResolvedRoot {
+                                path: base,
+                                provenance: Provenance::AppvarBase,
+                            },
+                            class,
+                            &self.application,
+                            &self.structure,
+                        )?,
+                    ));
+                },
+            }
         }
+        // The exact directory outranks a layout base when both are
+        // usable; absence of both falls through to the next tier.
+        if let Some((_, root)) = built
+            .iter()
+            .find(|(shape, _)| *shape == EnvShape::Directory)
+        {
+            return Ok(Some(root.clone()));
+        }
+        Ok(built.into_iter().next().map(|(_, root)| root))
     }
 
     /// Resolves a whole family with per-kind complete-or-missing roots.
@@ -751,6 +789,7 @@ mod env_capture_tests {
 
     static STATE_VAR: &str = "APPROOTS_TEST_CAPTURE_STATE";
     static CACHE_VAR: &str = "APPROOTS_TEST_CAPTURE_CACHE";
+    static BOTH_VAR: &str = "APPROOTS_TEST_CAPTURE_BOTH";
     static START_VAR: &str = "APPROOTS_TEST_CAPTURE_START";
     static CHILD_FLAG: &str = "APPROOTS_CAPTURE_CHILD";
 
@@ -781,6 +820,7 @@ mod env_capture_tests {
             .env(CHILD_FLAG, "1")
             .env(STATE_VAR, capture_dir(&unique, "state"))
             .env(CACHE_VAR, capture_dir(&unique, "cache"))
+            .env(BOTH_VAR, capture_dir(&unique, "both"))
             .env(START_VAR, capture_dir(&unique, "start"))
             .output()
             .expect("spawn capture child");
@@ -853,5 +893,16 @@ mod env_capture_tests {
         assert_eq!(bundle.state.provenance, Provenance::AppvarDirectory);
         assert_eq!(bundle.cache.provenance, Provenance::AppvarDirectory);
         assert_eq!(reads(), 4, "one read per distinct name");
+        // One name backing both shapes of one class is still a
+        // single read, with the exact directory winning.
+        let both = Resolver::new("fixture-app")
+            .expect("resolver")
+            .env_directory(DirectoryClass::Configuration, BOTH_VAR)
+            .env_base(DirectoryClass::Configuration, BOTH_VAR);
+        let root = both
+            .resolve(DirectoryClass::Configuration, None, None)
+            .expect("shared shape variable resolves");
+        assert_eq!(root.provenance, Provenance::AppvarDirectory);
+        assert_eq!(reads(), 5, "one read for both shapes");
     }
 }
