@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-21
+
+### Fixed
+
+- Exact directory beats layout base when one class declares both
+  environment shapes, with fail-fast validation of the unused
+  shape: precedence is now caller-supplied explicit root, declared
+  exact directory, declared layout base, discovery result,
+  platform-standard root.
+- `DuplicateEnvDeclaration` now fires only for two declarations with
+  the same shape for one class; declaring both shapes is allowed.
+
 ## [0.4.0] - 2026-11-20
 
 ### Changed
